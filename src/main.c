@@ -1,11 +1,25 @@
 #define BASE_IMPLEMENTATION
 #include "base.h"
 
+// :flags
+#define RENDER_RECTS
+
 // :const
 #define WIN_WIDTH  800
 #define WIN_HEIGHT 600
 #define FPS 60
 
+// Player constants
+#define PLAYER_SCALE 2
+const v2 PLAYER_SIZE = { PLAYER_SCALE * 64, PLAYER_SCALE * 64 };
+const Rect PLAYER_RECT = {
+	.x = PLAYER_SCALE * 19,
+	.y = PLAYER_SCALE * 19,
+	.w = PLAYER_SCALE * 25,
+	.h = PLAYER_SCALE * 30,
+};
+
+// Physics constants
 #define SPEED 10000.0f
 #define JUMP_ACC 30000.0f
 #define GRAVITY_ACC 2000.0f
@@ -101,20 +115,49 @@ SpriteManager load_sprites();
 void delete_sprites(SpriteManager* sm);
 
 // :entity def
+typedef enum {
+	UP,
+	LEFT,
+	RIGHT,
+	DIRS,
+} Dir;
+
+typedef enum {
+	JS_ASCENT,
+	JS_DESCENT,
+	JS_STILL,
+} JumpState;
+
 typedef struct {
 	v3 pos;
 	v2 size;
 	Rect rect;
 
-	// physics members
+	// render
+	Texture texture;
+
+	// animation
+	AnimationID anim_state;
+	Animator animator;
+	Dir face;
+	JumpState jump_state;
+
+	// physics
 	v2 vel;
 	v2 acc;
 	f32 airtime;
+	b32 move[DIRS];
 } Entity;
 
 // :physics def
+void physics_update_movement(Entity* ent, f64 dt);
 void physics_compute(Entity* ent, f64 dt);
 void physics_resolve(Entity* ent, Rect* rects, i32 rects_cnt, f64 dt);
+
+// :player def
+Entity* player_new(SpriteManager* sm);
+void player_controller(Entity* player, Event* event);
+void player_render(Entity* player, IMR* imr);
 
 /*
  * -------------------
@@ -335,6 +378,22 @@ void delete_sprites(SpriteManager* sm) {
 }
 
 // :physics impl
+void physics_update_movement(Entity* ent, f64 dt) {
+	if (ent->move[UP] &&
+		ent->airtime < AIRTIME_THRESHOLD)
+		ent->acc.y -= JUMP_ACC;
+
+	if (ent->move[LEFT]) {
+		ent->acc.x -= SPEED;
+		ent->face = LEFT;
+	}
+
+	if (ent->move[RIGHT]) {
+		ent->acc.x += SPEED;
+		ent->face = RIGHT;
+	}
+}
+
 void physics_compute(Entity* ent, f64 dt) {
 	// Add gravity
 	ent->acc.y += GRAVITY_ACC;
@@ -355,6 +414,13 @@ void physics_compute(Entity* ent, f64 dt) {
 
 	// Increasing the airtime
 	ent->airtime += AIRTIME_RATE;
+
+	// Set the entity movement states
+	if (ent->vel.y > 0) {
+		ent->jump_state = JS_DESCENT;
+	} else if (ent->vel.y < 0) {
+		ent->jump_state = JS_ASCENT;
+	}
 }
 
 void physics_resolve(Entity* ent, Rect* rects, i32 rects_cnt, f64 dt) {
@@ -403,6 +469,7 @@ void physics_resolve(Entity* ent, Rect* rects, i32 rects_cnt, f64 dt) {
 
 					// Reset airtime when on the ground
 					ent->airtime = 0;
+					ent->jump_state = JS_STILL;
 				} else if (ent->vel.y < 0) {
 					f32 dy = rect.y + rect.h - target.y;
 					ent->pos.y += dy;
@@ -419,6 +486,114 @@ void physics_resolve(Entity* ent, Rect* rects, i32 rects_cnt, f64 dt) {
 	ent->vel = (v2) { 0, 0 };
 }
 
+// :player impl
+Entity* player_new(SpriteManager* sm) {
+	Entity* ent = mem_alloc(sizeof(Entity));
+
+	ent->pos = (v3) { 100, 0, 0 };
+	ent->size = PLAYER_SIZE;
+	ent->rect = PLAYER_RECT;
+	ent->texture = sm->sprites[E_SAMURAI];
+	ent->animator = sm->animators[E_SAMURAI];
+	ent->face = RIGHT;
+
+	return ent;
+}
+
+void player_controller(Entity* player, Event* event) {
+	if (event->type == KEYDOWN) {
+		switch (event->e.key) {
+			case GLFW_KEY_W:
+				player->move[UP] = true;
+				break;
+			case GLFW_KEY_A:
+				player->move[LEFT] = true;
+				break;
+			case GLFW_KEY_D:
+				player->move[RIGHT] = true;
+				break;
+		}
+	}
+	else if (event->type == KEYUP) {
+		switch (event->e.key) {
+			case GLFW_KEY_W:
+				player->move[UP] = false;
+				break;
+			case GLFW_KEY_A:
+				player->move[LEFT] = false;
+				break;
+			case GLFW_KEY_D:
+				player->move[RIGHT] = false;
+				break;
+		}
+	}
+}
+
+void player_render(Entity* player, IMR* imr) {
+	// Setting up walking animation
+	if (player->move[LEFT] || player->move[RIGHT]) {
+		player->anim_state = WALK;
+	} else {
+		player->anim_state = IDLE;
+	}
+
+	// If both left and right movement is on, set it to IDLE
+	if (player->move[LEFT] && player->move[RIGHT])
+		player->anim_state = IDLE;
+
+	// Handling jump ascent and descent animation
+	switch (player->jump_state) {
+		case JS_ASCENT:
+			player->anim_state = ASCENT;
+			break;
+		case JS_DESCENT:
+			player->anim_state = DESCENT;
+			break;
+		default: break;
+	}
+
+	// Getting the correct frame
+	animator_switch_frame(&player->animator, player->anim_state);
+	Rect frame = animator_get_frame(&player->animator);
+
+	// Handling player rotation
+	m4 rot = rotate_y(0);
+	switch(player->face) {
+		case LEFT:
+			rot = rotate_y(PI);
+			break;
+		case RIGHT:
+			rot = rotate_y(0);
+			break;
+	}
+
+	// Rendering
+	imr_push_quad_tex(
+		imr,
+		player->pos,
+		player->size,
+		frame,
+		player->texture.id,
+		rot,
+		(v4) {1,1,1,1}
+	);
+
+	// Debug collider render
+#ifdef RENDER_RECTS
+	Rect rect = rect_with_offset(
+		(v2) { player->pos.x, player->pos.y },
+		player->rect
+	);
+	imr_push_quad(
+		imr,
+		(v3) { rect.x, rect.y, 0.0f },
+		(v2) { rect.w, rect.h },
+		rotate_x(0),
+		(v4) {1,0,0,0.5f}
+	);
+#endif
+}
+
 // :main
 int main() {
 	Window window = window_new("Combat", WIN_WIDTH, WIN_HEIGHT);
@@ -432,24 +607,13 @@ int main() {
 			.right = WIN_WIDTH,
 			.top = 0,
 			.bottom = WIN_HEIGHT,
-			.near = 0.0f,
+			.near = -1.0f,
 			.far = 1000.0f,
 		}
 	);
 	SpriteManager sm = load_sprites();
 
-	Animator am = sm.animators[E_SAMURAI];
-	animator_switch_frame(&am, IDLE);
-
-	Entity player = {
-		.pos = (v3) { 100, 0, 0 },
-		.size = (v2) { 64, 64 },
-		.rect = (Rect) { 0, 0, 64, 64},
-		.acc = (v2) { 0, 0 },
-		.vel = (v2) { 0, 0 },
-	};
-
-	b32 left, right, up, down;
+	Entity* player = player_new(&sm);
 
 	Rect rects[] = {
 		{ 0, 400, 300, 100 },
@@ -464,46 +628,12 @@ int main() {
 
 		Event event;
 		while (event_poll(window, &event)) {
-			if (event.type == KEYDOWN) {
-				switch (event.e.key) {
-					case GLFW_KEY_W:
-						up = true;
-						break;
-					case GLFW_KEY_A:
-						left = true;
-						break;
-					case GLFW_KEY_S:
-						down = true;
-						break;
-					case GLFW_KEY_D:
-						right = true;
-						break;
-				}
-			}
-			else if (event.type == KEYUP) {
-				switch (event.e.key) {
-					case GLFW_KEY_W:
-						up = false;
-						break;
-					case GLFW_KEY_A:
-						left = false;
-						break;
-					case GLFW_KEY_S:
-						down = false;
-						break;
-					case GLFW_KEY_D:
-						right = false;
-						break;
-				}
-			}
+			player_controller(player, &event);
 		}
 
-		if (up && player.airtime < AIRTIME_THRESHOLD) player.acc.y -= JUMP_ACC;
-		if (left)  player.acc.x -= SPEED;
-		if (right) player.acc.x += SPEED;
-
-		physics_compute(&player, fc.dt);
-		physics_resolve(&player, rects, rects_cnt, fc.dt);
+		physics_update_movement(player, fc.dt);
+		physics_compute(player, fc.dt);
+		physics_resolve(player, rects, rects_cnt, fc.dt);
 
 		m4 mvp = ocamera_calc_mvp(&camera);
 		imr_update_mvp(&imr, mvp);
@@ -511,23 +641,7 @@ int main() {
 		{
 			imr_clear((v4) { .5f, .5f, .5f, 1.0f });
 
-			Rect frame = animator_get_frame(&am);
-			// imr_push_quad_tex(
-			// 	&imr,
-			// 	player.pos,
-			// 	player.size,
-			// 	frame,
-			// 	sm.sprites[E_SAMURAI].id,
-			// 	rotate_x(0),
-			// 	(v4) {1,1,1,1}
-			// );
-			imr_push_quad(
-				&imr,
-				player.pos,
-				player.size,
-				rotate_x(0),
-				(v4) {1,1,0,1}
-			);
+			player_render(player, &imr);
 
 			for (i32 i = 0; i < rects_cnt; i++) {
 				Rect r = rects[i];
@@ -548,6 +662,8 @@ int main() {
 		frame_controller_end(&fc);
 		// printf("FPS: %d\n", fc.fps);
 	}
+
+	mem_free(player);
 
 	delete_sprites(&sm);
 	imr_delete(&imr);
