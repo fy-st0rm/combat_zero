@@ -9,6 +9,7 @@
 #include <math.h>
 #include <time.h>
 #include <unistd.h>
+#include <pthread.h>
 #include "external/glew/include/GL/glew.h"
 #include "external/glfw/include/GLFW/glfw3.h"
 #include "external/stb/stb_image.h"
@@ -493,7 +494,7 @@ Context ctx = {
 	.t_alloc = NULL,
 	.e_queue = (EventQueue) {
 		.front = -1,
-		.back  = -1
+		.back  = -1,
 	},
 	.inner = NULL,
 };
@@ -1203,11 +1204,11 @@ b32 event_poll(Window window, Event* event) {
 	glfwSetMouseButtonCallback(window.glfw_window, mouse_button_callback);
 	glfwSetCursorPosCallback(window.glfw_window, cursor_position_callback);
 
-	int res = ctx.e_queue.front >= 0;
-	if (res) {
-		*event = event_dequeue(&ctx.e_queue);
+	if (ctx.e_queue.front != ctx.e_queue.back) {
+		*event = event_dequeue(&ctx.e_queue);  // Dequeue the next event
+		return true;  // Event found
 	}
-	return res;
+	return false;
 }
 
 v2 event_mouse_pos(Window window) {
@@ -1222,23 +1223,16 @@ void event_set_mouse_pos(Window window, v2 pos) {
 
 // :event queue impl
 void event_enqueue(EventQueue* queue, Event e) {
-	queue->events[++queue->back] = e;
-	if (queue->front == -1) queue->front = 0;
-	if (queue->back >= MAX_EVENTS) {
-		if (queue->front != 0) queue->back = 0;
-		else panic(false, "EventQueue is full\n");
-	}
+	int next = (queue->back + 1) % MAX_EVENTS;
+	panic(next != queue->front, "EventQueue is full\n");
+	queue->events[queue->back] = e;
+	queue->back = next;
 }
 
 Event event_dequeue(EventQueue* queue) {
-	panic(queue->front >= 0, "EventQueue is empty\n");
-
+	panic(queue->front != queue->back, "EventQueue is empty\n");
 	Event value = queue->events[queue->front];
-
-	if (queue->front == queue->back) queue->front = -1;
-	else if (queue->front >= MAX_EVENTS)  queue->front = 0;
-	else queue->front++;
-
+	queue->front = (queue->front + 1) % MAX_EVENTS;
 	return value;
 }
 

@@ -1,23 +1,31 @@
 #define BASE_IMPLEMENTATION
 #include "base.h"
 
+extern Context ctx;
+
 // :flags
-#define RENDER_RECTS
+// #define RENDER_RECTS
+// #define RENDER_HITRANGE
 
 // :const
-#define WIN_WIDTH  800
-#define WIN_HEIGHT 600
+#define WIN_WIDTH  1280
+#define WIN_HEIGHT 720
 #define FPS 60
 
-// Player constants
-#define PLAYER_SCALE 2
-const v2 PLAYER_SIZE = { PLAYER_SCALE * 64, PLAYER_SCALE * 64 };
-const Rect PLAYER_RECT = {
-	.x = PLAYER_SCALE * 19,
-	.y = PLAYER_SCALE * 19,
-	.w = PLAYER_SCALE * 25,
-	.h = PLAYER_SCALE * 30,
+// Character constants
+#define CHAR_SCALE 2
+const v2 CHAR_SIZE = { CHAR_SCALE * 64, CHAR_SCALE * 64 };
+const Rect CHAR_RECT = {
+	.x = CHAR_SCALE * 19,
+	.y = CHAR_SCALE * 19,
+	.w = CHAR_SCALE * 25,
+	.h = CHAR_SCALE * 30,
 };
+const v4 PLAYER_TINT = { 0, 1, 1, 1 };
+const v4 ENEMY_TINT  = { 1, 0, 0, 1 };
+#define HIT_RANGE 100.0f
+#define ATK_COOLDOWN 10.0f
+#define ATK_COOLDOWN_RATE 0.8f
 
 // Physics constants
 #define SPEED 10000.0f
@@ -133,6 +141,13 @@ typedef struct {
 	v2 size;
 	Rect rect;
 
+	// gameplay
+	b32 attack;
+	b32 can_atk;
+	b32 try_atk;
+	f32 atk_cooldown;
+	AnimationID prev_atk_frame;
+
 	// render
 	Texture texture;
 
@@ -150,14 +165,21 @@ typedef struct {
 } Entity;
 
 // :physics def
-void physics_update_movement(Entity* ent, f64 dt);
+void physics_movement(Entity* ent, f64 dt);
 void physics_compute(Entity* ent, f64 dt);
 void physics_resolve(Entity* ent, Rect* rects, i32 rects_cnt, f64 dt);
 
+// :character def
+void char_render(Entity* ent, IMR* imr, v4 tint);
+
 // :player def
 Entity* player_new(SpriteManager* sm);
-void player_controller(Entity* player, Event* event);
-void player_render(Entity* player, IMR* imr);
+void player_controller(Entity* ent, Event event);
+void player_update(Entity* ent, Rect* rects, i32 rects_cnt, f64 dt);
+
+// :enemy def
+Entity* enemy_new(SpriteManager* sm);
+void enemy_update(Entity* ent, Entity* player, Rect* rects, i32 rects_cnt, f64 dt);
 
 /*
  * -------------------
@@ -216,6 +238,10 @@ Rect animator_get_frame(Animator* animator) {
 
 	f64 fpt = entry->frames.count / entry->duration;
 	entry->curr_frame = floor(fpt * dt);
+
+	// NOTE: Limiting the current frame index cuz sometimes it crashes due to overflow
+	if (entry->curr_frame >= entry->frames.count)
+		entry->curr_frame = entry->frames.count - 1;
 
 	panic(
 		entry->curr_frame < entry->frames.count,
@@ -313,7 +339,7 @@ SpriteManager load_sprites() {
 				AnimationEntry swing_1_entry = {
 					.id = SWING_1,
 					.frames = swing_1_frames,
-					.duration = 100.0f * 4
+					.duration = 50.0f * 4
 				};
 
 				Frames swing_2_frames = {0};
@@ -328,7 +354,7 @@ SpriteManager load_sprites() {
 				AnimationEntry swing_2_entry = {
 					.id = SWING_2,
 					.frames = swing_2_frames,
-					.duration = 100.0f * 3
+					.duration = 50.0f * 3
 				};
 
 				Frames death_frames = {0};
@@ -378,7 +404,7 @@ void delete_sprites(SpriteManager* sm) {
 }
 
 // :physics impl
-void physics_update_movement(Entity* ent, f64 dt) {
+void physics_movement(Entity* ent, f64 dt) {
 	if (ent->move[UP] &&
 		ent->airtime < AIRTIME_THRESHOLD)
 		ent->acc.y -= JUMP_ACC;
@@ -486,79 +512,83 @@ void physics_resolve(Entity* ent, Rect* rects, i32 rects_cnt, f64 dt) {
 	ent->vel = (v2) { 0, 0 };
 }
 
-// :player impl
-Entity* player_new(SpriteManager* sm) {
-	Entity* ent = mem_alloc(sizeof(Entity));
+// :character impl
+void char_render(Entity* ent, IMR* imr, v4 tint) {
+	if (ent->try_atk && ent->can_atk && ent->atk_cooldown == 0.0f)
+		ent->attack = true;
 
-	ent->pos = (v3) { 100, 0, 0 };
-	ent->size = PLAYER_SIZE;
-	ent->rect = PLAYER_RECT;
-	ent->texture = sm->sprites[E_SAMURAI];
-	ent->animator = sm->animators[E_SAMURAI];
-	ent->face = RIGHT;
+	// If the character is in attack animation
+	// then skip the jump and walking animations
+	if (!ent->can_atk)
+		goto skip_state;
 
-	return ent;
-}
-
-void player_controller(Entity* player, Event* event) {
-	if (event->type == KEYDOWN) {
-		switch (event->e.key) {
-			case GLFW_KEY_W:
-				player->move[UP] = true;
-				break;
-			case GLFW_KEY_A:
-				player->move[LEFT] = true;
-				break;
-			case GLFW_KEY_D:
-				player->move[RIGHT] = true;
-				break;
-		}
-	}
-	else if (event->type == KEYUP) {
-		switch (event->e.key) {
-			case GLFW_KEY_W:
-				player->move[UP] = false;
-				break;
-			case GLFW_KEY_A:
-				player->move[LEFT] = false;
-				break;
-			case GLFW_KEY_D:
-				player->move[RIGHT] = false;
-				break;
-		}
-	}
-}
-
-void player_render(Entity* player, IMR* imr) {
 	// Setting up walking animation
-	if (player->move[LEFT] || player->move[RIGHT]) {
-		player->anim_state = WALK;
+	if (ent->move[LEFT] || ent->move[RIGHT]) {
+		ent->anim_state = WALK;
 	} else {
-		player->anim_state = IDLE;
+		ent->anim_state = IDLE;
 	}
 
 	// If both left and right movement is on, set it to IDLE
-	if (player->move[LEFT] && player->move[RIGHT])
-		player->anim_state = IDLE;
+	if (ent->move[LEFT] && ent->move[RIGHT])
+		ent->anim_state = IDLE;
 
 	// Handling jump ascent and descent animation
-	switch (player->jump_state) {
+	switch (ent->jump_state) {
 		case JS_ASCENT:
-			player->anim_state = ASCENT;
+			ent->anim_state = ASCENT;
 			break;
 		case JS_DESCENT:
-			player->anim_state = DESCENT;
+			ent->anim_state = DESCENT;
 			break;
 		default: break;
 	}
+skip_state:
 
-	// Getting the correct frame
-	animator_switch_frame(&player->animator, player->anim_state);
-	Rect frame = animator_get_frame(&player->animator);
+	if (ent->attack) {
+		// Toggling between different swings
+		if (ent->prev_atk_frame == SWING_1) {
+			ent->anim_state = SWING_2;
+			ent->prev_atk_frame = SWING_2;
+		} else {
+			ent->anim_state = SWING_1;
+			ent->prev_atk_frame = SWING_1;
+		}
+
+		// Stoping further attack by setting the cooldown
+		ent->attack = false;
+		ent->can_atk = false;
+		ent->atk_cooldown = ATK_COOLDOWN;
+	}
+
+	// Switch the animation state
+	animator_switch_frame(&ent->animator, ent->anim_state);
+
+	// If we are in attack state ie (can_atk = false)
+	if (!ent->can_atk) {
+		AnimationEntry* entry = animator_get_entry(&ent->animator, ent->anim_state);
+
+		// Set (can_atk = true) when the animation for the swing is complete
+		if (entry->curr_frame >= entry->frames.count - 1) {
+			ent->can_atk = true;
+		}
+	}
+
+	// If we can attack again ie animation is complete
+	// then we start the cooldown
+	if (ent->can_atk && ent->atk_cooldown > 0.0f) {
+		ent->atk_cooldown -= ATK_COOLDOWN_RATE;
+		if (ent->atk_cooldown < 0.0f) {
+			ent->atk_cooldown = 0.0f;
+		}
+	}
+
+	// Get the texture coords of current frame
+	Rect frame = animator_get_frame(&ent->animator);
 
 	// Handling player rotation
 	m4 rot = rotate_y(0);
-	switch(player->face) {
+	switch(ent->face) {
 		case LEFT:
 			rot = rotate_y(PI);
 			break;
@@ -570,19 +600,19 @@ void player_render(Entity* player, IMR* imr) {
 	// Rendering
 	imr_push_quad_tex(
 		imr,
-		player->pos,
-		player->size,
+		ent->pos,
+		ent->size,
 		frame,
-		player->texture.id,
+		ent->texture.id,
 		rot,
-		(v4) {1,1,1,1}
+		tint
 	);
 
 	// Debug collider render
 #ifdef RENDER_RECTS
 	Rect rect = rect_with_offset(
-		(v2) { player->pos.x, player->pos.y },
-		player->rect
+		(v2) { ent->pos.x, ent->pos.y },
+		ent->rect
 	);
 	imr_push_quad(
 		imr,
@@ -592,6 +622,128 @@ void player_render(Entity* player, IMR* imr) {
 		(v4) {1,0,0,0.5f}
 	);
 #endif
+}
+
+// :player impl
+Entity* player_new(SpriteManager* sm) {
+	Entity* ent = mem_alloc(sizeof(Entity));
+
+	ent->pos = (v3) { 100, 0, 0 };
+	ent->size = CHAR_SIZE;
+	ent->rect = CHAR_RECT;
+	ent->texture = sm->sprites[E_SAMURAI];
+	ent->animator = sm->animators[E_SAMURAI];
+	ent->face = RIGHT;
+	ent->can_atk = true;
+
+	return ent;
+}
+
+void player_controller(Entity* ent, Event event) {
+	if (event.type == KEYDOWN) {
+		switch (event.e.key) {
+			case GLFW_KEY_W:
+				ent->move[UP] = true;
+				break;
+			case GLFW_KEY_A:
+				ent->move[LEFT] = true;
+				break;
+			case GLFW_KEY_D:
+				ent->move[RIGHT] = true;
+				break;
+		}
+	}
+	else if (event.type == KEYUP) {
+		switch (event.e.key) {
+			case GLFW_KEY_W:
+				ent->move[UP] = false;
+				break;
+			case GLFW_KEY_A:
+				ent->move[LEFT] = false;
+				break;
+			case GLFW_KEY_D:
+				ent->move[RIGHT] = false;
+				break;
+		}
+	}
+	else if (event.type == MOUSE_BUTTON_DOWN) {
+		if (event.e.button == MOUSE_BUTTON_LEFT) {
+			ent->try_atk = true;
+		}
+	}
+	else if (event.type == MOUSE_BUTTON_UP) {
+		if (event.e.button == MOUSE_BUTTON_LEFT) {
+			ent->try_atk = false;
+		}
+	}
+}
+
+void player_update(Entity* ent, Rect* rects, i32 rects_cnt, f64 dt) {
+	physics_movement(ent, dt);
+	physics_compute(ent, dt);
+	physics_resolve(ent, rects, rects_cnt, dt);
+}
+
+// :enemy impl
+Entity* enemy_new(SpriteManager* sm) {
+	Entity* ent = mem_alloc(sizeof(Entity));
+
+	ent->pos = (v3) { 300, 0, 0 };
+	ent->size = CHAR_SIZE;
+	ent->rect = CHAR_RECT;
+	ent->texture = sm->sprites[E_SAMURAI];
+	ent->animator = sm->animators[E_SAMURAI];
+	ent->face = LEFT;
+
+	return ent;
+}
+
+void enemy_update(Entity* ent, Entity* player, Rect* rects, i32 rects_cnt, f64 dt) {
+	if (player->pos.x < ent->pos.x) {
+		ent->face = LEFT;
+		if (ent->pos.x - player->pos.x > HIT_RANGE) {
+			ent->move[RIGHT] = false;
+			ent->move[LEFT] = true;
+		} else {
+			ent->move[LEFT] = false;
+		}
+	}
+	else if (player->pos.x > ent->pos.x) {
+		ent->face = RIGHT;
+		if (player->pos.x - ent->pos.x > HIT_RANGE) {
+			ent->move[LEFT] = false;
+			ent->move[RIGHT] = true;
+		} else {
+			ent->move[RIGHT] = false;
+		}
+	}
+
+	if ((ent->pos.x - player->pos.x < HIT_RANGE) ||
+		 (player->pos.x - ent->pos.x < HIT_RANGE)) {
+		if (player->pos.y < ent->pos.y) {
+			ent->move[UP] = true;
+		} else {
+			ent->move[UP] = false;
+		}
+	}
+
+#ifdef RENDER_HITRANGE
+	Rect rect = rect_with_offset(
+		(v2) { ent->pos.x, ent->pos.y },
+		ent->rect
+	);
+	imr_push_quad(
+		ctx.inner,
+		(v3) { rect.x - HIT_RANGE, rect.y, ent->pos.z },
+		(v2) { 2 * HIT_RANGE + rect.w, rect.h },
+		rotate_y(0),
+		(v4) { 1, 1, 0, 0.5 }
+	);
+#endif
+
+	physics_movement(ent, dt);
+	physics_compute(ent, dt);
+	physics_resolve(ent, rects, rects_cnt, dt);
 }
 
 // :main
@@ -613,7 +765,12 @@ int main() {
 	);
 	SpriteManager sm = load_sprites();
 
+	// Set renderer to context for debug rendering
+	ctx.inner = &imr;
+
+	// Characters
 	Entity* player = player_new(&sm);
+	Entity* enemy = enemy_new(&sm);
 
 	Rect rects[] = {
 		{ 0, 400, 300, 100 },
@@ -623,25 +780,32 @@ int main() {
 	};
 	i32 rects_cnt = sizeof(rects) / sizeof(rects[0]);
 
+	// :loop
 	while (!window.should_close) {
 		frame_controller_start(&fc);
 
-		Event event;
+		// :event
+		Event event = {0};
 		while (event_poll(window, &event)) {
-			player_controller(player, &event);
+			player_controller(player, event);
 		}
-
-		physics_update_movement(player, fc.dt);
-		physics_compute(player, fc.dt);
-		physics_resolve(player, rects, rects_cnt, fc.dt);
 
 		m4 mvp = ocamera_calc_mvp(&camera);
 		imr_update_mvp(&imr, mvp);
-		imr_begin(&imr);
-		{
-			imr_clear((v4) { .5f, .5f, .5f, 1.0f });
+		imr_clear((v4) { .5f, .5f, .5f, 1.0f });
 
-			player_render(player, &imr);
+		imr_begin(&imr);
+
+		// :update
+		{
+			player_update(player, rects, rects_cnt, fc.dt);
+			enemy_update(enemy, player, rects, rects_cnt, fc.dt);
+		}
+
+		// :render
+		{
+			char_render(player, &imr, PLAYER_TINT);
+			char_render(enemy, &imr, ENEMY_TINT);
 
 			for (i32 i = 0; i < rects_cnt; i++) {
 				Rect r = rects[i];
@@ -652,10 +816,12 @@ int main() {
 					pos,
 					size,
 					rotate_x(0),
-					(v4) {pos.x / WIN_WIDTH, pos.y / WIN_HEIGHT, i / rects_cnt,1}
+					(v4) { 0.1, 0.1, 0.1, 1 }
+		//			(v4) {pos.x / WIN_WIDTH, pos.y / WIN_HEIGHT, i / rects_cnt,1}
 				);
 			}
 		}
+		
 		imr_end(&imr);
 
 		window_update(&window);
@@ -663,7 +829,9 @@ int main() {
 		// printf("FPS: %d\n", fc.fps);
 	}
 
+	// :clean
 	mem_free(player);
+	mem_free(enemy);
 
 	delete_sprites(&sm);
 	imr_delete(&imr);
