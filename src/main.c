@@ -21,11 +21,19 @@ const Rect CHAR_RECT = {
 	.w = CHAR_SCALE * 25,
 	.h = CHAR_SCALE * 30,
 };
-const v4 PLAYER_TINT = { 0, 1, 1, 1 };
-const v4 ENEMY_TINT  = { 1, 0, 0, 1 };
-#define HIT_RANGE 100.0f
+
+// Colors
+const v4 PLAYER_TINT = { 1, 1, 1, 1 };
+const v4 ENEMY_TINT  = { 0.2, 0.5, 1, 1 };
+const v4 HIT_TINT    = { 1, 0, 0, 1 };
+
+// Combat constants
+#define HIT_RANGE 80.0f
 #define ATK_COOLDOWN 10.0f
 #define ATK_COOLDOWN_RATE 0.8f
+#define KNOCKBACK 50000.0f
+#define STUN_TIMEOUT 10.0f
+#define STUN_TIMEOUT_RATE 0.5f
 
 // Physics constants
 #define SPEED 10000.0f
@@ -148,6 +156,9 @@ typedef struct {
 	f32 atk_cooldown;
 	AnimationID prev_atk_frame;
 
+	b32 hit;
+	f32 stun_timeout;
+
 	// render
 	Texture texture;
 
@@ -164,18 +175,22 @@ typedef struct {
 	b32 move[DIRS];
 } Entity;
 
+Rect entity_get_rect(Entity* ent);
+
 // :physics def
 void physics_movement(Entity* ent, f64 dt);
 void physics_compute(Entity* ent, f64 dt);
 void physics_resolve(Entity* ent, Rect* rects, i32 rects_cnt, f64 dt);
 
-// :character def
+// :char def
+Rect char_get_hitbox(Entity* ent);
+void char_update(Entity* ent, Entity* other, Rect* rects, i32 rects_cnt, f64 dt);
 void char_render(Entity* ent, IMR* imr, v4 tint);
 
 // :player def
 Entity* player_new(SpriteManager* sm);
 void player_controller(Entity* ent, Event event);
-void player_update(Entity* ent, Rect* rects, i32 rects_cnt, f64 dt);
+void player_update(Entity* ent, Entity* enemy, Rect* rects, i32 rects_cnt, f64 dt);
 
 // :enemy def
 Entity* enemy_new(SpriteManager* sm);
@@ -403,6 +418,14 @@ void delete_sprites(SpriteManager* sm) {
 	}
 }
 
+// :entity impl
+Rect entity_get_rect(Entity* ent) {
+	return rect_with_offset(
+		(v2) { ent->pos.x, ent->pos.y },
+		ent->rect
+	);
+}
+
 // :physics impl
 void physics_movement(Entity* ent, f64 dt) {
 	if (ent->move[UP] &&
@@ -457,10 +480,7 @@ void physics_resolve(Entity* ent, Rect* rects, i32 rects_cnt, f64 dt) {
 		// Loop through all collision bodies
 		for (i32 i = 0; i < rects_cnt; i++) {
 			Rect rect = rects[i];
-			Rect target = rect_with_offset(
-				(v2) { ent->pos.x, ent->pos.y },
-				ent->rect
-			);
+			Rect target = entity_get_rect(ent);
 
 			// Resolution
 			if (rect_intersect(target, rect)) {
@@ -482,10 +502,7 @@ void physics_resolve(Entity* ent, Rect* rects, i32 rects_cnt, f64 dt) {
 		// Loop through all collision bodies
 		for (i32 i = 0; i < rects_cnt; i++) {
 			Rect rect = rects[i];
-			Rect target = rect_with_offset(
-				(v2) { ent->pos.x, ent->pos.y },
-				ent->rect
-			);
+			Rect target = entity_get_rect(ent);
 
 			// Resolution
 			if (rect_intersect(target, rect)) {
@@ -512,11 +529,60 @@ void physics_resolve(Entity* ent, Rect* rects, i32 rects_cnt, f64 dt) {
 	ent->vel = (v2) { 0, 0 };
 }
 
-// :character impl
-void char_render(Entity* ent, IMR* imr, v4 tint) {
-	if (ent->try_atk && ent->can_atk && ent->atk_cooldown == 0.0f)
-		ent->attack = true;
+// :char impl
+Rect char_get_hitbox(Entity* ent) {
+	Rect rect = entity_get_rect(ent);
 
+	Rect hitbox = {
+		.y = rect.y,
+		.w = HIT_RANGE,
+		.h = rect.h,
+	};
+
+	if (ent->face == LEFT) {
+		hitbox.x = rect.x - HIT_RANGE;
+	} else {
+		hitbox.x = rect.x + rect.w;
+	}
+
+	return hitbox;
+}
+
+void char_update(Entity* ent, Entity* other, Rect* rects, i32 rects_cnt, f64 dt) {
+	if (ent->try_atk && ent->can_atk && ent->atk_cooldown == 0.0f) {
+		ent->attack = true;
+	}
+	
+	Rect hitbox = char_get_hitbox(ent);
+	Rect e_rect = entity_get_rect(other);
+
+	// Give knockback and stun to the other entity when attacked
+	if (ent->attack && rect_intersect_inclusive(e_rect, hitbox)) {
+		if (ent->face == LEFT) {
+			other->acc.x -= KNOCKBACK;
+		} else {
+			other->acc.x += KNOCKBACK;
+		}
+		other->hit = true;
+		other->stun_timeout = STUN_TIMEOUT;
+	}
+
+	physics_movement(ent, dt);
+	physics_compute(ent, dt);
+	physics_resolve(ent, rects, rects_cnt, dt);
+
+#ifdef RENDER_HITRANGE
+	imr_push_quad(
+		ctx.inner,
+		(v3) { hitbox.x, hitbox.y, ent->pos.z },
+		(v2) { hitbox.w, hitbox.h },
+		rotate_y(0),
+		(v4) { 1, 1, 0, 0.5 }
+	);
+#endif
+}
+
+void char_render(Entity* ent, IMR* imr, v4 tint) {
 	// If the character is in attack animation
 	// then skip the jump and walking animations
 	if (!ent->can_atk)
@@ -576,6 +642,7 @@ skip_state:
 
 	// If we can attack again ie animation is complete
 	// then we start the cooldown
+	// TODO: Multiply rate with (dt) maybe?
 	if (ent->can_atk && ent->atk_cooldown > 0.0f) {
 		ent->atk_cooldown -= ATK_COOLDOWN_RATE;
 		if (ent->atk_cooldown < 0.0f) {
@@ -597,6 +664,11 @@ skip_state:
 			break;
 	}
 
+	// If hit apply the hit tint instead
+	if (ent->hit) {
+		tint = HIT_TINT;
+	}
+
 	// Rendering
 	imr_push_quad_tex(
 		imr,
@@ -610,10 +682,7 @@ skip_state:
 
 	// Debug collider render
 #ifdef RENDER_RECTS
-	Rect rect = rect_with_offset(
-		(v2) { ent->pos.x, ent->pos.y },
-		ent->rect
-	);
+	Rect rect = entity_get_rect(ent);
 	imr_push_quad(
 		imr,
 		(v3) { rect.x, rect.y, 0.0f },
@@ -678,10 +747,16 @@ void player_controller(Entity* ent, Event event) {
 	}
 }
 
-void player_update(Entity* ent, Rect* rects, i32 rects_cnt, f64 dt) {
-	physics_movement(ent, dt);
-	physics_compute(ent, dt);
-	physics_resolve(ent, rects, rects_cnt, dt);
+void player_update(Entity* ent, Entity* enemy, Rect* rects, i32 rects_cnt, f64 dt) {
+	// Update the character stuff first
+	char_update(ent, enemy, rects, rects_cnt, dt);
+
+	if (ent->hit) {
+		// TODO: Multiply rate with (dt) maybe?
+		ent->stun_timeout -= STUN_TIMEOUT_RATE;
+		if (ent->stun_timeout <= 0.0f)
+			ent->hit = false;
+	}
 }
 
 // :enemy impl
@@ -699,8 +774,25 @@ Entity* enemy_new(SpriteManager* sm) {
 }
 
 void enemy_update(Entity* ent, Entity* player, Rect* rects, i32 rects_cnt, f64 dt) {
+	// Update the character stuff first
+	char_update(ent, player, rects, rects_cnt, dt);
+
+	// If a hit is encountered add a slight stun to movement
+	if (ent->hit) {
+		ent->move[LEFT] = ent->move[RIGHT] = false;
+
+		// TODO: Multiply rate with (dt) maybe?
+		ent->stun_timeout -= STUN_TIMEOUT_RATE;
+		if (ent->stun_timeout <= 0.0f)
+			ent->hit = false;
+
+		goto skip_movement;
+	}
+
+	// When player is on the left side
 	if (player->pos.x < ent->pos.x) {
 		ent->face = LEFT;
+		// Move within the hitrange
 		if (ent->pos.x - player->pos.x > HIT_RANGE) {
 			ent->move[RIGHT] = false;
 			ent->move[LEFT] = true;
@@ -708,8 +800,10 @@ void enemy_update(Entity* ent, Entity* player, Rect* rects, i32 rects_cnt, f64 d
 			ent->move[LEFT] = false;
 		}
 	}
+	// When player is on the right side
 	else if (player->pos.x > ent->pos.x) {
 		ent->face = RIGHT;
+		// Move within the hitrange
 		if (player->pos.x - ent->pos.x > HIT_RANGE) {
 			ent->move[LEFT] = false;
 			ent->move[RIGHT] = true;
@@ -718,6 +812,7 @@ void enemy_update(Entity* ent, Entity* player, Rect* rects, i32 rects_cnt, f64 d
 		}
 	}
 
+	// If the player is in the sky you shall too
 	if ((ent->pos.x - player->pos.x < HIT_RANGE) ||
 		 (player->pos.x - ent->pos.x < HIT_RANGE)) {
 		if (player->pos.y < ent->pos.y) {
@@ -726,24 +821,7 @@ void enemy_update(Entity* ent, Entity* player, Rect* rects, i32 rects_cnt, f64 d
 			ent->move[UP] = false;
 		}
 	}
-
-#ifdef RENDER_HITRANGE
-	Rect rect = rect_with_offset(
-		(v2) { ent->pos.x, ent->pos.y },
-		ent->rect
-	);
-	imr_push_quad(
-		ctx.inner,
-		(v3) { rect.x - HIT_RANGE, rect.y, ent->pos.z },
-		(v2) { 2 * HIT_RANGE + rect.w, rect.h },
-		rotate_y(0),
-		(v4) { 1, 1, 0, 0.5 }
-	);
-#endif
-
-	physics_movement(ent, dt);
-	physics_compute(ent, dt);
-	physics_resolve(ent, rects, rects_cnt, dt);
+skip_movement:
 }
 
 // :main
@@ -788,6 +866,17 @@ int main() {
 		Event event = {0};
 		while (event_poll(window, &event)) {
 			player_controller(player, event);
+
+			if (event.type == MOUSE_BUTTON_DOWN) {
+				if (event.e.button == MOUSE_BUTTON_RIGHT) {
+					enemy->try_atk = true;
+				}
+			}
+			else if (event.type == MOUSE_BUTTON_UP) {
+				if (event.e.button == MOUSE_BUTTON_RIGHT) {
+					enemy->try_atk = false;
+				}
+			}
 		}
 
 		m4 mvp = ocamera_calc_mvp(&camera);
@@ -798,7 +887,7 @@ int main() {
 
 		// :update
 		{
-			player_update(player, rects, rects_cnt, fc.dt);
+			player_update(player, enemy, rects, rects_cnt, fc.dt);
 			enemy_update(enemy, player, rects, rects_cnt, fc.dt);
 		}
 

@@ -242,7 +242,8 @@ typedef struct {
 } Rect;
 
 #define print_rect(r) print_v4(*((v4*)&r))
-b32 rect_intersect(Rect r1, Rect r2);
+b32 rect_intersect_inclusive(Rect r1, Rect r2);   // Includes comparision with <=
+b32 rect_intersect(Rect r1, Rect r2);             // Includes comparision with <
 b32 point_in_rect(v2 p, Rect r);
 Rect rect_with_offset(v2 pos, Rect offset_rect);
 
@@ -1053,6 +1054,15 @@ m4 rotate_z(f32 theta) {
 }
 
 // :rect impl
+b32 rect_intersect_inclusive(Rect r1, Rect r2) {
+	return (
+		((r1.x <= r2.x && r2.x <= r1.x + r1.w)  ||
+		 (r2.x <= r1.x && r1.x <= r2.x + r2.w)) &&
+		((r1.y <= r2.y && r2.y <= r1.y + r1.h)  ||
+		 (r2.y <= r1.y && r1.y <= r2.y + r2.h))
+	);
+}
+
 b32 rect_intersect(Rect r1, Rect r2) {
 	return (
 		((r1.x < r2.x && r2.x < r1.x + r1.w) ||
