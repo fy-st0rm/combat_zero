@@ -557,6 +557,12 @@ Rect char_get_hitbox(Entity* ent) {
 }
 
 void char_update(Entity* ent, Entity* other, Rect* rects, i32 rects_cnt, f64 dt) {
+	// If entity is dead just update physics
+	if (ent->dead) {
+		goto to_physics;
+	};
+
+	// Can only attack when cooldown is reseted
 	if (ent->try_atk && ent->can_atk && ent->atk_cooldown == 0.0f) {
 		ent->attack = true;
 	}
@@ -578,7 +584,11 @@ void char_update(Entity* ent, Entity* other, Rect* rects, i32 rects_cnt, f64 dt)
 		other->health -= HIT_DMG;
 	}
 
+	// Movement handling
 	physics_movement(ent, dt);
+
+to_physics:
+	// Physics updating
 	physics_compute(ent, dt);
 	physics_resolve(ent, rects, rects_cnt, dt);
 
@@ -781,7 +791,7 @@ void player_update(Entity* ent, Entity* enemy, Rect* rects, i32 rects_cnt, f64 d
 Entity* enemy_new(SpriteManager* sm) {
 	Entity* ent = mem_alloc(sizeof(Entity));
 
-	ent->pos = (v3) { 300, 0, 0 };
+	ent->pos = (v3) { 800, 0, 0 };
 	ent->size = CHAR_SIZE;
 	ent->rect = CHAR_RECT;
 	ent->texture = sm->sprites[E_SAMURAI];
@@ -793,11 +803,11 @@ Entity* enemy_new(SpriteManager* sm) {
 }
 
 void enemy_update(Entity* ent, Entity* player, Rect* rects, i32 rects_cnt, f64 dt) {
-	// If dead dont update
-	if (ent->dead) return;
-
 	// Update the character stuff first
 	char_update(ent, player, rects, rects_cnt, dt);
+
+	// If dead dont update
+	if (ent->dead) return;
 
 	// If a hit is encountered add a slight stun to movement
 	if (ent->hit) {
@@ -843,6 +853,15 @@ void enemy_update(Entity* ent, Entity* player, Rect* rects, i32 rects_cnt, f64 d
 			ent->move[UP] = false;
 		}
 	}
+
+	// If player is alive and inside of hitbox ATTACK
+	Rect hitbox = char_get_hitbox(ent);
+	Rect p_rect = entity_get_rect(player);
+	if (rect_intersect_inclusive(hitbox, p_rect) && !player->dead) {
+		ent->try_atk = true;
+	} else {
+		ent->try_atk = false;
+	}
 }
 
 // :main
@@ -872,10 +891,9 @@ int main() {
 	Entity* enemy = enemy_new(&sm);
 
 	Rect rects[] = {
-		{ 0, 400, 300, 100 },
-		{ 300, 400, 500, 100 },
-		{ 700, 300, 50, 100 },
-		{ 700, 100, 50, 200 },
+		{ 0, 600, WIN_WIDTH, 100 },
+		{ 0, 0, 50, WIN_HEIGHT },
+		{ WIN_WIDTH - 50, 0, 50, WIN_HEIGHT },
 	};
 	i32 rects_cnt = sizeof(rects) / sizeof(rects[0]);
 
