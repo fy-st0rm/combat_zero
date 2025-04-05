@@ -19,7 +19,7 @@ const Rect CHAR_RECT = {
 	.x = CHAR_SCALE * 19,
 	.y = CHAR_SCALE * 19,
 	.w = CHAR_SCALE * 25,
-	.h = CHAR_SCALE * 30,
+	.h = CHAR_SCALE * 29,
 };
 
 // Colors
@@ -29,6 +29,7 @@ const v4 HIT_TINT    = { 1, 0, 0, 1 };
 
 // Combat constants
 #define HIT_RANGE 80.0f
+#define HIT_DMG 10.0f;
 #define ATK_COOLDOWN 10.0f
 #define ATK_COOLDOWN_RATE 0.8f
 #define KNOCKBACK 50000.0f
@@ -102,6 +103,7 @@ typedef struct {
 	i32 id;
 	f32 duration;
 	i32 curr_frame;
+	b32 no_repeat;
 	Frames frames;
 } AnimationEntry;
 
@@ -158,6 +160,9 @@ typedef struct {
 
 	b32 hit;
 	f32 stun_timeout;
+
+	f32 health;
+	b32 dead;
 
 	// render
 	Texture texture;
@@ -246,10 +251,12 @@ Rect animator_get_frame(Animator* animator) {
 	AnimationEntry* entry = animator_get_entry(animator, animator->curr_state);
 
 	f64 dt = (glfwGetTime() - animator->start_time) * 1000;
-	if (dt >= entry->duration) {
+
+	// Responsible for looping the animation
+	if (dt >= entry->duration && !entry->no_repeat) {
 		animator->start_time = glfwGetTime();
+		dt = (glfwGetTime() - animator->start_time) * 1000;
 	}
-	dt = (glfwGetTime() - animator->start_time) * 1000;
 
 	f64 fpt = entry->frames.count / entry->duration;
 	entry->curr_frame = floor(fpt * dt);
@@ -384,7 +391,8 @@ SpriteManager load_sprites() {
 				AnimationEntry death_entry = {
 					.id = DEATH,
 					.frames = death_frames,
-					.duration = 100.0f * 14
+					.duration = 100.0f * 14,
+					.no_repeat = true, // Death animation should not repeat
 				};
 
 				AnimationEntry* entries = mem_alloc(sizeof(AnimationEntry) * 7);
@@ -556,8 +564,8 @@ void char_update(Entity* ent, Entity* other, Rect* rects, i32 rects_cnt, f64 dt)
 	Rect hitbox = char_get_hitbox(ent);
 	Rect e_rect = entity_get_rect(other);
 
-	// Give knockback and stun to the other entity when attacked
-	if (ent->attack && rect_intersect_inclusive(e_rect, hitbox)) {
+	// Give knockback and stun to the other entity when attacked when other is alive
+	if (ent->attack && rect_intersect_inclusive(e_rect, hitbox) && !other->dead) {
 		if (ent->face == LEFT) {
 			other->acc.x -= KNOCKBACK;
 		} else {
@@ -565,6 +573,9 @@ void char_update(Entity* ent, Entity* other, Rect* rects, i32 rects_cnt, f64 dt)
 		}
 		other->hit = true;
 		other->stun_timeout = STUN_TIMEOUT;
+
+		// Give damage to the other entity
+		other->health -= HIT_DMG;
 	}
 
 	physics_movement(ent, dt);
@@ -586,7 +597,7 @@ void char_render(Entity* ent, IMR* imr, v4 tint) {
 	// If the character is in attack animation
 	// then skip the jump and walking animations
 	if (!ent->can_atk)
-		goto skip_state;
+		goto skip_movement_state;
 
 	// Setting up walking animation
 	if (ent->move[LEFT] || ent->move[RIGHT]) {
@@ -609,7 +620,7 @@ void char_render(Entity* ent, IMR* imr, v4 tint) {
 			break;
 		default: break;
 	}
-skip_state:
+skip_movement_state:
 
 	if (ent->attack) {
 		// Toggling between different swings
@@ -627,19 +638,6 @@ skip_state:
 		ent->atk_cooldown = ATK_COOLDOWN;
 	}
 
-	// Switch the animation state
-	animator_switch_frame(&ent->animator, ent->anim_state);
-
-	// If we are in attack state ie (can_atk = false)
-	if (!ent->can_atk) {
-		AnimationEntry* entry = animator_get_entry(&ent->animator, ent->anim_state);
-
-		// Set (can_atk = true) when the animation for the swing is complete
-		if (entry->curr_frame >= entry->frames.count - 1) {
-			ent->can_atk = true;
-		}
-	}
-
 	// If we can attack again ie animation is complete
 	// then we start the cooldown
 	// TODO: Multiply rate with (dt) maybe?
@@ -647,6 +645,25 @@ skip_state:
 		ent->atk_cooldown -= ATK_COOLDOWN_RATE;
 		if (ent->atk_cooldown < 0.0f) {
 			ent->atk_cooldown = 0.0f;
+		}
+	}
+
+	// Making entity dead when the health drops below 0
+	if (ent->health <= 0.0f) {
+		ent->anim_state = DEATH;
+		ent->dead = true;
+	}
+
+	// Switch the animation state
+	animator_switch_frame(&ent->animator, ent->anim_state);
+
+	// If we are in attack state ie (can_atk = false) and entity is alive
+	if (!ent->can_atk && !ent->dead) {
+		AnimationEntry* entry = animator_get_entry(&ent->animator, ent->anim_state);
+
+		// Set (can_atk = true) when the animation for the swing is complete
+		if (entry->curr_frame >= entry->frames.count - 1) {
+			ent->can_atk = true;
 		}
 	}
 
@@ -704,6 +721,7 @@ Entity* player_new(SpriteManager* sm) {
 	ent->animator = sm->animators[E_SAMURAI];
 	ent->face = RIGHT;
 	ent->can_atk = true;
+	ent->health = 100.0f;
 
 	return ent;
 }
@@ -769,11 +787,15 @@ Entity* enemy_new(SpriteManager* sm) {
 	ent->texture = sm->sprites[E_SAMURAI];
 	ent->animator = sm->animators[E_SAMURAI];
 	ent->face = LEFT;
+	ent->health = 100.0f;
 
 	return ent;
 }
 
 void enemy_update(Entity* ent, Entity* player, Rect* rects, i32 rects_cnt, f64 dt) {
+	// If dead dont update
+	if (ent->dead) return;
+
 	// Update the character stuff first
 	char_update(ent, player, rects, rects_cnt, dt);
 
@@ -786,7 +808,7 @@ void enemy_update(Entity* ent, Entity* player, Rect* rects, i32 rects_cnt, f64 d
 		if (ent->stun_timeout <= 0.0f)
 			ent->hit = false;
 
-		goto skip_movement;
+		return;
 	}
 
 	// When player is on the left side
@@ -821,7 +843,6 @@ void enemy_update(Entity* ent, Entity* player, Rect* rects, i32 rects_cnt, f64 d
 			ent->move[UP] = false;
 		}
 	}
-skip_movement:
 }
 
 // :main
