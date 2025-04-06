@@ -9,7 +9,6 @@
 #include <math.h>
 #include <time.h>
 #include <unistd.h>
-#include <pthread.h>
 #include "external/glew/include/GL/glew.h"
 #include "external/glfw/include/GLFW/glfw3.h"
 #include "external/stb/stb_image.h"
@@ -491,17 +490,23 @@ void ctx_end();
 #ifdef BASE_IMPLEMENTATION
 
 // :context impl
-Context ctx = {
-	.t_alloc = NULL,
-	.e_queue = (EventQueue) {
-		.front = -1,
-		.back  = -1,
-	},
-	.inner = NULL,
-};
+Context* ctx = NULL;
+
+void ctx_begin() {
+	if (ctx) return;
+
+	ctx = (Context*) malloc(sizeof(Context));
+	ctx->t_alloc = trace_allocator_new();
+	ctx->e_queue = (EventQueue) {
+		.front = 0,
+		.back  = 0,
+	};
+	ctx->inner = NULL;
+}
 
 void ctx_end() {
-	if (ctx.t_alloc) trace_allocator_delete(ctx.t_alloc);
+	if (ctx->t_alloc) trace_allocator_delete(ctx->t_alloc);
+	free(ctx);
 }
 
 // :alloc impl
@@ -620,21 +625,21 @@ void trace_allocator_alert(Trace_Allocator* allocator) {
 }
 
 void* __mem_alloc(i64 size, const char* file, i32 line) {
-	if (!ctx.t_alloc) {
-		ctx.t_alloc = trace_allocator_new();
-	}
-	return __trace_allocator_alloc(ctx.t_alloc, size, file, line);
+	panic(ctx, "Context hasnt been initialized");
+	panic(ctx->t_alloc, "Allocator hasnt been initialized");
+	return __trace_allocator_alloc(ctx->t_alloc, size, file, line);
 }
 
 void* __mem_realloc(void* ptr, size_t new_cap, const char* file, i32 line){
-	if (!ctx.t_alloc) {
-		ctx.t_alloc = trace_allocator_new();
-	}
-	return __trace_allocator_realloc(ctx.t_alloc, ptr, new_cap, file, line);
+	panic(ctx, "Context hasnt been initialized");
+	panic(ctx->t_alloc, "Allocator hasnt been initialized");
+	return __trace_allocator_realloc(ctx->t_alloc, ptr, new_cap, file, line);
 }
 
 void mem_free(void* ptr) {
-	trace_allocator_free(ctx.t_alloc, ptr);
+	panic(ctx, "Context hasnt been initialized");
+	panic(ctx->t_alloc, "Allocator hasnt been initialized");
+	trace_allocator_free(ctx->t_alloc, ptr);
 }
 
 // :vec impl
@@ -1094,6 +1099,9 @@ Rect rect_with_offset(v2 pos, Rect offset_rect) {
 
 // :window impl
 Window window_new(const char* title, u32 width, u32 height) {
+	// Initialize the context
+	ctx_begin();
+
 	panic(glfwInit(), "Failed to initialize glfw\n");
 
 	glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
@@ -1117,6 +1125,9 @@ Window window_new(const char* title, u32 width, u32 height) {
 
 void window_delete(Window window) {
 	glfwDestroyWindow(window.glfw_window);
+
+	// Deleting the context
+	ctx_end();
 }
 
 void window_update(Window* window) {
@@ -1171,7 +1182,7 @@ void key_callback(GLFWwindow* window, i32 key, i32 scancode, i32 action, i32 mod
 			break;
 	}
 
-	event_enqueue(&ctx.e_queue, event);
+	event_enqueue(&ctx->e_queue, event);
 }
 
 void mouse_button_callback(GLFWwindow* window, int button, int action, int mods) {
@@ -1199,14 +1210,14 @@ void mouse_button_callback(GLFWwindow* window, int button, int action, int mods)
 			panic(0, "Unhandled mouse action: %d\n", action);
 	}
 
-	event_enqueue(&ctx.e_queue, event);
+	event_enqueue(&ctx->e_queue, event);
 }
 
 void cursor_position_callback(GLFWwindow* window, double xpos, double ypos) {
 	Event event = { 0 };
 	event.e.mouse_pos = (v2) { xpos, ypos };
 	event.type = MOUSE_MOTION;
-	event_enqueue(&ctx.e_queue, event);
+	event_enqueue(&ctx->e_queue, event);
 }
 
 b32 event_poll(Window window, Event* event) {
@@ -1214,8 +1225,8 @@ b32 event_poll(Window window, Event* event) {
 	glfwSetMouseButtonCallback(window.glfw_window, mouse_button_callback);
 	glfwSetCursorPosCallback(window.glfw_window, cursor_position_callback);
 
-	if (ctx.e_queue.front != ctx.e_queue.back) {
-		*event = event_dequeue(&ctx.e_queue);  // Dequeue the next event
+	if (ctx->e_queue.front != ctx->e_queue.back) {
+		*event = event_dequeue(&ctx->e_queue);  // Dequeue the next event
 		return true;  // Event found
 	}
 	return false;

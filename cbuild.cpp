@@ -24,8 +24,7 @@ int main(int argc, char** argv) {
 			"src/main.c",
 		})
 		.build()
-		.clean()
-		.run(argc, argv);
+		.clean();
 
 	return 0;
 }

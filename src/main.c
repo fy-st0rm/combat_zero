@@ -1,7 +1,7 @@
 #define BASE_IMPLEMENTATION
 #include "base.h"
 
-extern Context ctx;
+extern Context* ctx;
 
 // :flags
 // #define RENDER_RECTS
@@ -884,7 +884,7 @@ int main() {
 	SpriteManager sm = load_sprites();
 
 	// Set renderer to context for debug rendering
-	ctx.inner = &imr;
+	ctx->inner = &imr;
 
 	// Characters
 	Entity* player = player_new(&sm);
@@ -964,7 +964,5 @@ int main() {
 	delete_sprites(&sm);
 	imr_delete(&imr);
 	window_delete(window);
-
-	ctx_end();
 	return 0;
 }
