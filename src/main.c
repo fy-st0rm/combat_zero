@@ -35,6 +35,9 @@ const v4 HIT_TINT    = { 1, 0, 0, 1 };
 #define KNOCKBACK 50000.0f
 #define STUN_TIMEOUT 10.0f
 #define STUN_TIMEOUT_RATE 0.5f
+#define CONSEC_ATK_TIMEGAP 1.0
+#define CONSEC_ATK_HOLD 2.0
+#define MAX_CONSEC_ATK 3.0f
 
 // Physics constants
 #define SPEED 10000.0f
@@ -157,6 +160,9 @@ typedef struct {
 	b32 try_atk;
 	f32 atk_cooldown;
 	AnimationID prev_atk_frame;
+	i32 consec_atk;
+	f64 last_atk_time;
+	b32 run;
 
 	b32 hit;
 	f32 stun_timeout;
@@ -562,16 +568,33 @@ void char_update(Entity* ent, Entity* other, Rect* rects, i32 rects_cnt, f64 dt)
 		goto to_physics;
 	};
 
+	// If the entity hasnt attacked for too long then reset the consecutive attack counter
+	if (fabs(ent->last_atk_time - glfwGetTime()) >= CONSEC_ATK_HOLD) {
+		ent->consec_atk = 0;
+	}
+
 	// Can only attack when cooldown is reseted
-	if (ent->try_atk && ent->can_atk && ent->atk_cooldown == 0.0f) {
+	if (ent->try_atk && ent->can_atk && ent->atk_cooldown == 0.0f && ent->consec_atk <= MAX_CONSEC_ATK) {
 		ent->attack = true;
+
+		// If the diff in attack is smaller than threshold then it counts as consecutive attack
+		if (fabs(ent->last_atk_time - glfwGetTime()) < CONSEC_ATK_TIMEGAP) {
+			ent->consec_atk++;
+		}
+		ent->last_atk_time = glfwGetTime();
 	}
 	
 	Rect hitbox = char_get_hitbox(ent);
 	Rect e_rect = entity_get_rect(other);
 
-	// Give knockback and stun to the other entity when attacked when other is alive
-	if (ent->attack && rect_intersect_inclusive(e_rect, hitbox) && !other->dead) {
+	// Give knockback and stun to the other entity when attacked
+	if (
+		ent->attack  &&                               // When able to attack
+		!other->dead &&                               // And when the other guy is alive
+//	TODO: Maybe introduce someday?
+//	!ent->hit    &&                               // And self shouldnt be hit at the moment
+		rect_intersect_inclusive(e_rect, hitbox)      // The hitbox and rect of the other should collide
+	) {
 		if (ent->face == LEFT) {
 			other->acc.x -= KNOCKBACK;
 		} else {
@@ -582,6 +605,19 @@ void char_update(Entity* ent, Entity* other, Rect* rects, i32 rects_cnt, f64 dt)
 
 		// Give damage to the other entity
 		other->health -= HIT_DMG;
+	}
+
+	// If a hit is encountered add a slight stun to movement
+	if (ent->hit) {
+
+		// Reset states while being in stun state
+		ent->move[LEFT] = ent->move[RIGHT] = ent->move[UP] = false;
+		ent->try_atk = false;
+
+		// TODO: Multiply rate with (dt) maybe?
+		ent->stun_timeout -= STUN_TIMEOUT_RATE;
+		if (ent->stun_timeout <= 0.0f)
+			ent->hit = false;
 	}
 
 	// Movement handling
@@ -724,7 +760,7 @@ skip_movement_state:
 Entity* player_new(SpriteManager* sm) {
 	Entity* ent = mem_alloc(sizeof(Entity));
 
-	ent->pos = (v3) { 100, 0, 0 };
+	ent->pos = (v3) { 100, 600 - CHAR_RECT.h, 0 };
 	ent->size = CHAR_SIZE;
 	ent->rect = CHAR_RECT;
 	ent->texture = sm->sprites[E_SAMURAI];
@@ -778,20 +814,13 @@ void player_controller(Entity* ent, Event event) {
 void player_update(Entity* ent, Entity* enemy, Rect* rects, i32 rects_cnt, f64 dt) {
 	// Update the character stuff first
 	char_update(ent, enemy, rects, rects_cnt, dt);
-
-	if (ent->hit) {
-		// TODO: Multiply rate with (dt) maybe?
-		ent->stun_timeout -= STUN_TIMEOUT_RATE;
-		if (ent->stun_timeout <= 0.0f)
-			ent->hit = false;
-	}
 }
 
 // :enemy impl
 Entity* enemy_new(SpriteManager* sm) {
 	Entity* ent = mem_alloc(sizeof(Entity));
 
-	ent->pos = (v3) { 800, 0, 0 };
+	ent->pos = (v3) { 800, 600 - CHAR_RECT.h, 0 };
 	ent->size = CHAR_SIZE;
 	ent->rect = CHAR_RECT;
 	ent->texture = sm->sprites[E_SAMURAI];
@@ -809,15 +838,22 @@ void enemy_update(Entity* ent, Entity* player, Rect* rects, i32 rects_cnt, f64 d
 	// If dead dont update
 	if (ent->dead) return;
 
-	// If a hit is encountered add a slight stun to movement
-	if (ent->hit) {
-		ent->move[LEFT] = ent->move[RIGHT] = false;
-
-		// TODO: Multiply rate with (dt) maybe?
-		ent->stun_timeout -= STUN_TIMEOUT_RATE;
-		if (ent->stun_timeout <= 0.0f)
-			ent->hit = false;
-
+	// When it cannot attack anymore. it RUNS
+	if (ent->consec_atk > MAX_CONSEC_ATK) {
+		if (fabsf(player->pos.x - ent->pos.x) < 500) {
+			if (player->pos.x < ent->pos.x) {
+				ent->move[RIGHT] = true;
+			} else {
+				ent->move[LEFT] = true;
+			}
+		} else {
+			ent->move[LEFT] = ent->move[RIGHT] = false;
+			if (player->pos.x < ent->pos.x) {
+				ent->face = LEFT;
+			} else {
+				ent->face = RIGHT;
+			}
+		}
 		return;
 	}
 
@@ -891,7 +927,7 @@ int main() {
 	Entity* enemy = enemy_new(&sm);
 
 	Rect rects[] = {
-		{ 0, 600, WIN_WIDTH, 100 },
+		{ 0, 700, WIN_WIDTH, 100 },
 		{ 0, 0, 50, WIN_HEIGHT },
 		{ WIN_WIDTH - 50, 0, 50, WIN_HEIGHT },
 	};
