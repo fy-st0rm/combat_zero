@@ -1,0 +1,11 @@
+Dash System
+	+ Dash
+	+ Resolve player going outside of wall while dashing
+
+	(Maybe works for now?)
+	- Dash attack
+	- Dash dodge
+
+	(Polish)
+	- Dash animation
+

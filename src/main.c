@@ -40,14 +40,19 @@ const v4 HIT_TINT    = { 1, 0, 0, 1 };
 #define MAX_CONSEC_ATK 3.0f
 
 // Physics constants
-#define SPEED 10000.0f
-#define JUMP_ACC 30000.0f
 #define GRAVITY_ACC 2000.0f
 #define VERT_ACC_THRESHOLD 50000.0f
 #define AIR_FRICTION 0.95f
 #define GROUND_FRICTION 0.5f
 #define AIRTIME_THRESHOLD 50.0f
-#define AIRTIME_RATE 10.0f
+#define AIRTIME_RATE 15.0f
+
+// Movement constants
+#define SPEED 10000.0f
+#define JUMP_ACC 30000.0f
+#define DASH_ACC 500000.0f
+#define DASH_COOLDOWN 100.0f
+#define DASH_COOLDOWN_RATE 0.5f
 
 // :utils
 #define DA_START_CAP 50
@@ -59,6 +64,51 @@ const v4 HIT_TINT    = { 1, 0, 0, 1 };
 	}                                                                                 \
 	(da)->items[(da)->count++] = (value);                                             \
 } while(0);                                                                         \
+
+static b32 LineIntersectsRect(v2 p0, v2 p1, Rect rect, v2* outHitPoint) {
+	float tmin = 0.0f;
+	float tmax = 1.0f;
+	v2 d = { p1.x - p0.x, p1.y - p0.y };
+	
+	float minX = rect.x;
+	float maxX = rect.x + rect.w;
+	float minY = rect.y;
+	float maxY = rect.y + rect.h;
+	
+	for (int i = 0; i < 2; i++) {
+		float origin = (i == 0) ? p0.x : p0.y;
+		float dir    = (i == 0) ? d.x  : d.y;
+		float min    = (i == 0) ? minX : minY;
+		float max    = (i == 0) ? maxX : maxY;
+		
+		if (dir == 0.0f) {
+			if (origin < min || origin > max)
+				return false; // No hit
+		} else {
+			float ood = 1.0f / dir;
+			float t1 = (min - origin) * ood;
+			float t2 = (max - origin) * ood;
+			
+			if (t1 > t2) {
+				float tmp = t1; t1 = t2; t2 = tmp;
+			}
+			
+			if (t1 > tmin) tmin = t1;
+			if (t2 < tmax) tmax = t2;
+			
+			if (tmin > tmax)
+				return false; // No overlap
+		}
+	}
+	
+	if (tmin < 0.0f || tmin > 1.0f)
+		return false; // Intersection not on segment
+	
+	if (outHitPoint)
+		*outHitPoint = v2_add(p0, v2_mul_scalar(d, tmin));
+	
+	return true;
+}
 
 /*
  * ---------------
@@ -155,6 +205,8 @@ typedef struct {
 	Rect rect;
 
 	// gameplay
+
+	// combat
 	b32 attack;
 	b32 can_atk;
 	b32 try_atk;
@@ -164,9 +216,15 @@ typedef struct {
 	f64 last_atk_time;
 	b32 run;
 
+	// dash
+	b32 dash;
+	f32 dash_cooldown;
+
+	// damage
 	b32 hit;
 	f32 stun_timeout;
 
+	// health
 	f32 health;
 	b32 dead;
 
@@ -489,12 +547,63 @@ void physics_compute(Entity* ent, f64 dt) {
 void physics_resolve(Entity* ent, Rect* rects, i32 rects_cnt, f64 dt) {
 	// X-axis collision resolution
 	{
+		v2 p0, p1;
+		Rect target = entity_get_rect(ent);
+
+		// Point infront of the entity before moving
+		if (ent->face == RIGHT) {
+			p0 = (v2) {
+				target.x + target.w,
+				target.y + target.h / 2,
+			};
+		} else {
+			p0 = (v2) {
+				target.x,
+				target.y + target.h / 2
+			};
+		}
+
 		ent->pos.x += ent->vel.x * dt;
+
+		target = entity_get_rect(ent);
+
+		// Point infront of the entity after moving
+		if (ent->face == RIGHT) {
+			p1 = (v2) {
+				target.x + target.w,
+				target.y + target.h / 2,
+			};
+		} else {
+			p1 = (v2) {
+				target.x,
+				target.y + target.h / 2
+			};
+		}
 
 		// Loop through all collision bodies
 		for (i32 i = 0; i < rects_cnt; i++) {
 			Rect rect = rects[i];
-			Rect target = entity_get_rect(ent);
+
+			v2 hit = {0};
+
+			// Checking if there is a rect inbetween of those points
+			if (LineIntersectsRect(p0, p1, rect, &hit)) {
+
+				// Resolving if there exists a collision
+				if (ent->face == RIGHT) {
+					if (hit.x < target.x + target.w) {
+						ent->pos.x = hit.x - (ent->rect.x + ent->rect.w);
+					}
+				} else {
+					if (hit.x > target.x) {
+						ent->pos.x = hit.x - ent->rect.x;
+					}
+				}
+
+				// Since the X collision is resolved for that rect
+				// No further resolution is needed
+				continue;
+			}
 
 			// Resolution
 			if (rect_intersect(target, rect)) {
@@ -619,6 +728,25 @@ void char_update(Entity* ent, Entity* other, Rect* rects, i32 rects_cnt, f64 dt)
 		if (ent->stun_timeout <= 0.0f)
 			ent->hit = false;
 	}
+
+	// TODO: What if I got hit during dash?
+	// Handle dashing
+	if (ent->dash && ent->dash_cooldown == 0.0f) {
+		switch (ent->face) {
+			case LEFT:
+				ent->acc.x -= DASH_ACC;
+				break;
+			case RIGHT:
+				ent->acc.x += DASH_ACC;
+				break;
+		}
+
+		ent->dash_cooldown = DASH_COOLDOWN;
+	}
+	ent->dash = false;
+	ent->dash_cooldown -= DASH_COOLDOWN_RATE;
+	if (ent->dash_cooldown <= 0.0f)
+		ent->dash_cooldown = 0.0f;
 
 	// Movement handling
 	physics_movement(ent, dt);
@@ -783,6 +911,9 @@ void player_controller(Entity* ent, Event event) {
 				break;
 			case GLFW_KEY_D:
 				ent->move[RIGHT] = true;
+				break;
+			case GLFW_KEY_SPACE:
+				ent->dash = true;
 				break;
 		}
 	}
@@ -963,7 +1094,8 @@ int main() {
 		// :update
 		{
 			player_update(player, enemy, rects, rects_cnt, fc.dt);
-			enemy_update(enemy, player, rects, rects_cnt, fc.dt);
+			char_update(enemy, player, rects, rects_cnt, fc.dt);
+			// enemy_update(enemy, player, rects, rects_cnt, fc.dt);
 		}
 
 		// :render
