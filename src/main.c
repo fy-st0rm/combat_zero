@@ -35,7 +35,6 @@ const v4 HIT_TINT    = { 1, 0, 0, 1 };
 #define KNOCKBACK 50000.0f
 #define STUN_TIMEOUT 10.0f
 #define STUN_TIMEOUT_RATE 0.5f
-#define CONSEC_ATK_TIMEGAP 1.0
 #define CONSEC_ATK_HOLD 2.0
 #define MAX_CONSEC_ATK 3.0f
 
@@ -264,6 +263,10 @@ void player_update(Entity* ent, Entity* enemy, Rect* rects, i32 rects_cnt, f64 d
 // :enemy def
 Entity* enemy_new(SpriteManager* sm);
 void enemy_update(Entity* ent, Entity* player, Rect* rects, i32 rects_cnt, f64 dt);
+
+// :ui def
+void render_progress_bar(IMR* imr, v3 pos, v2 size, f32 val, f32 max, v4 color);
+
 
 /*
  * -------------------
@@ -683,13 +686,11 @@ void char_update(Entity* ent, Entity* other, Rect* rects, i32 rects_cnt, f64 dt)
 	}
 
 	// Can only attack when cooldown is reseted
-	if (ent->try_atk && ent->can_atk && ent->atk_cooldown == 0.0f && ent->consec_atk <= MAX_CONSEC_ATK) {
+	if (ent->try_atk && ent->can_atk && ent->atk_cooldown == 0.0f && ent->consec_atk < MAX_CONSEC_ATK) {
 		ent->attack = true;
+		ent->consec_atk++;
 
-		// If the diff in attack is smaller than threshold then it counts as consecutive attack
-		if (fabs(ent->last_atk_time - glfwGetTime()) < CONSEC_ATK_TIMEGAP) {
-			ent->consec_atk++;
-		}
+		// Record the attack time
 		ent->last_atk_time = glfwGetTime();
 	}
 	
@@ -1031,6 +1032,18 @@ void enemy_update(Entity* ent, Entity* player, Rect* rects, i32 rects_cnt, f64 d
 	}
 }
 
+// :ui impl
+void render_progress_bar(IMR* imr, v3 pos, v2 size, f32 val, f32 max, v4 color) {
+	f32 length = val / max * size.x;
+	imr_push_quad(
+		imr,
+		pos,
+		(v2) { length, size.y },
+		rotate_x(0),
+		color
+	);
+}
+
 // :main
 int main() {
 	Window window = window_new("Combat", WIN_WIDTH, WIN_HEIGHT);
@@ -1113,9 +1126,15 @@ int main() {
 					size,
 					rotate_x(0),
 					(v4) { 0.1, 0.1, 0.1, 1 }
-		//			(v4) {pos.x / WIN_WIDTH, pos.y / WIN_HEIGHT, i / rects_cnt,1}
 				);
 			}
+
+			// Rendering ui stuff
+			render_progress_bar(&imr, (v3) { 10, 10, 0 }, (v2) { 200, 20 }, player->health, 100.0f, PLAYER_TINT);
+			render_progress_bar(&imr, (v3) { 10, 40, 0 }, (v2) { 200, 10 }, DASH_COOLDOWN - player->dash_cooldown, DASH_COOLDOWN, PLAYER_TINT);
+			render_progress_bar(&imr, (v3) { 10, 60, 0 }, (v2) { 200, 10 }, MAX_CONSEC_ATK - player->consec_atk, MAX_CONSEC_ATK, PLAYER_TINT);
+
+			render_progress_bar(&imr, (v3) { WIN_WIDTH - 210, 10, 0 }, (v2) { 200, 20 }, enemy->health, 100.0f, ENEMY_TINT);
 		}
 		
 		imr_end(&imr);

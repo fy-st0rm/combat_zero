@@ -9,3 +9,15 @@ Dash System
 	(Polish)
 	- Dash animation
 
+
+UI
+	+ Health bar
+	+ Attack timeout
+	+ Dash timeout
+
+	(Polish)
+	- Prettier design
+	- A proper layout to differentiate player and enemy health
+
+
+Enemy AI
