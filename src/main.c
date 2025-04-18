@@ -29,14 +29,22 @@ const v4 HIT_TINT    = { 1, 0, 0, 1 };
 
 // Combat constants
 #define HIT_RANGE 80.0f
+#define HIT_RANGE_ON_DASH 500.0f
 #define HIT_DMG 10.0f;
-#define ATK_COOLDOWN 10.0f
-#define ATK_COOLDOWN_RATE 0.8f
+#define SWING_COOLDOWN 10.0f
+#define SWING_COOLDOWN_RATE 0.8f
 #define KNOCKBACK 50000.0f
 #define STUN_TIMEOUT 10.0f
 #define STUN_TIMEOUT_RATE 0.5f
 #define CONSEC_ATK_HOLD 2.0
 #define MAX_CONSEC_ATK 3.0f
+
+// Enemy constants
+#define ENEMY_ATK_COOLDOWN 20.0f
+#define ENEMY_ATK_COOLDOWN_RATE 0.1f
+#define PLAYER_TOO_CLOSE 200.0f
+#define IN_PLAYER_HITZONE HIT_RANGE + 20.0f
+#define ENEMY_DASH_PROBABILITY 30
 
 // Physics constants
 #define GRAVITY_ACC 2000.0f
@@ -51,7 +59,9 @@ const v4 HIT_TINT    = { 1, 0, 0, 1 };
 #define JUMP_ACC 30000.0f
 #define DASH_ACC 500000.0f
 #define DASH_COOLDOWN 100.0f
-#define DASH_COOLDOWN_RATE 0.5f
+#define DASH_COOLDOWN_RATE 0.8f
+#define DASH_GHOST_ALPHA 0.7f
+#define DASH_GHOST_ALPHA_RATE 0.005f;
 
 // :utils
 #define DA_START_CAP 50
@@ -207,17 +217,26 @@ typedef struct {
 
 	// combat
 	b32 attack;
-	b32 can_atk;
 	b32 try_atk;
 	f32 atk_cooldown;
+
+	f32 swing_cooldown;
+	b32 is_swing_complete;
 	AnimationID prev_atk_frame;
-	i32 consec_atk;
+
 	f64 last_atk_time;
-	b32 run;
+	i32 consec_atk;
+	b32 do_consec_atk;
 
 	// dash
 	b32 dash;
+	b32 try_dash;
 	f32 dash_cooldown;
+	v3 dash_start_pos;
+	v3 dash_end_pos;
+	Rect frame_during_dash;
+	Dir face_during_dash;
+	f32 dash_ghost_alpha;
 
 	// damage
 	b32 hit;
@@ -235,6 +254,7 @@ typedef struct {
 	Animator animator;
 	Dir face;
 	JumpState jump_state;
+	Rect curr_frame;
 
 	// physics
 	v2 vel;
@@ -252,7 +272,9 @@ void physics_resolve(Entity* ent, Rect* rects, i32 rects_cnt, f64 dt);
 
 // :char def
 Rect char_get_hitbox(Entity* ent);
-void char_update(Entity* ent, Entity* other, Rect* rects, i32 rects_cnt, f64 dt);
+void char_handle_atk(Entity* ent, Entity* other);
+void char_handle_hit(Entity* ent);
+void char_handle_dash(Entity* ent, f64 dt);
 void char_render(Entity* ent, IMR* imr, v4 tint);
 
 // :player def
@@ -659,34 +681,50 @@ void physics_resolve(Entity* ent, Rect* rects, i32 rects_cnt, f64 dt) {
 Rect char_get_hitbox(Entity* ent) {
 	Rect rect = entity_get_rect(ent);
 
+	f32 hit_range = HIT_RANGE;
+
+	// Increasing the hit range during dashing
+	if (ent->dash) {
+		hit_range += HIT_RANGE_ON_DASH;
+	}
+
 	Rect hitbox = {
 		.y = rect.y,
-		.w = HIT_RANGE,
+		.w = hit_range,
 		.h = rect.h,
 	};
 
+	// Setting up the hitbox start position according to the dash and face direction
 	if (ent->face == LEFT) {
-		hitbox.x = rect.x - HIT_RANGE;
+		if (ent->dash) {
+			hitbox.x = rect.x - hit_range / 3.0f;
+		} else {
+			hitbox.x = rect.x - hit_range;
+		}
 	} else {
-		hitbox.x = rect.x + rect.w;
+		if (ent->dash) {
+			hitbox.x = rect.x + rect.w - hit_range / 1.5f;
+		} else {
+			hitbox.x = rect.x + rect.w;
+		}
 	}
 
 	return hitbox;
 }
 
-void char_update(Entity* ent, Entity* other, Rect* rects, i32 rects_cnt, f64 dt) {
-	// If entity is dead just update physics
-	if (ent->dead) {
-		goto to_physics;
-	};
-
+void char_handle_atk(Entity* ent, Entity* other) {
 	// If the entity hasnt attacked for too long then reset the consecutive attack counter
 	if (fabs(ent->last_atk_time - glfwGetTime()) >= CONSEC_ATK_HOLD) {
 		ent->consec_atk = 0;
 	}
 
-	// Can only attack when cooldown is reseted
-	if (ent->try_atk && ent->can_atk && ent->atk_cooldown == 0.0f && ent->consec_atk < MAX_CONSEC_ATK) {
+	// Do attack
+	if (
+		ent->try_atk &&                       // When entity tried to attack
+		ent->atk_cooldown == 0.0f &&          // If the attack cooldown is 0
+		ent->swing_cooldown == 0.0f &&        // If the swing cooldown is 0
+		ent->consec_atk < MAX_CONSEC_ATK      // If the entity hasnt exhausted cosecutive attacks
+	) {
 		ent->attack = true;
 		ent->consec_atk++;
 
@@ -695,7 +733,7 @@ void char_update(Entity* ent, Entity* other, Rect* rects, i32 rects_cnt, f64 dt)
 	}
 	
 	Rect hitbox = char_get_hitbox(ent);
-	Rect e_rect = entity_get_rect(other);
+	Rect o_rect = entity_get_rect(other);
 
 	// Give knockback and stun to the other entity when attacked
 	if (
@@ -703,7 +741,7 @@ void char_update(Entity* ent, Entity* other, Rect* rects, i32 rects_cnt, f64 dt)
 		!other->dead &&                               // And when the other guy is alive
 //	TODO: Maybe introduce someday?
 //	!ent->hit    &&                               // And self shouldnt be hit at the moment
-		rect_intersect_inclusive(e_rect, hitbox)      // The hitbox and rect of the other should collide
+		rect_intersect_inclusive(o_rect, hitbox)      // The hitbox and rect of the other should collide
 	) {
 		if (ent->face == LEFT) {
 			other->acc.x -= KNOCKBACK;
@@ -717,22 +755,39 @@ void char_update(Entity* ent, Entity* other, Rect* rects, i32 rects_cnt, f64 dt)
 		other->health -= HIT_DMG;
 	}
 
+#ifdef RENDER_HITRANGE
+	imr_push_quad(
+		ctx->inner,
+		(v3) { hitbox.x, hitbox.y, ent->pos.z },
+		(v2) { hitbox.w, hitbox.h },
+		rotate_y(0),
+		(v4) { 1, 1, 0, 0.5 }
+	);
+#endif
+}
+
+void char_handle_hit(Entity* ent) {
+	if (!ent->hit) return;
+
 	// If a hit is encountered add a slight stun to movement
-	if (ent->hit) {
 
-		// Reset states while being in stun state
-		ent->move[LEFT] = ent->move[RIGHT] = ent->move[UP] = false;
-		ent->try_atk = false;
+	// TODO: This stuns the character when got hit. Maybe introduce this when needed?
+	// Reset states while being in stun state
+	// ent->move[LEFT] = ent->move[RIGHT] = ent->move[UP] = false;
+	// ent->try_atk = false;
 
-		// TODO: Multiply rate with (dt) maybe?
-		ent->stun_timeout -= STUN_TIMEOUT_RATE;
-		if (ent->stun_timeout <= 0.0f)
-			ent->hit = false;
-	}
+	// TODO: Multiply rate with (dt) maybe?
+	ent->stun_timeout -= STUN_TIMEOUT_RATE;
+	if (ent->stun_timeout <= 0.0f)
+		ent->hit = false;
+}
 
+void char_handle_dash(Entity* ent, f64 dt) {
 	// TODO: What if I got hit during dash?
 	// Handle dashing
-	if (ent->dash && ent->dash_cooldown == 0.0f) {
+
+	ent->dash = ent->try_dash && (ent->dash_cooldown == 0.0f);
+	if (ent->dash) {
 		switch (ent->face) {
 			case LEFT:
 				ent->acc.x -= DASH_ACC;
@@ -742,36 +797,50 @@ void char_update(Entity* ent, Entity* other, Rect* rects, i32 rects_cnt, f64 dt)
 				break;
 		}
 
+		// Record the current state of the player
+		v3 start_pos = ent->pos;
+		v3 end_pos = ent->pos;
+		v2 acc = ent->acc;
+
+		// Do a simple acceleration simulation to find the end position after dashing
+		while (v2_mag(acc) > 0.0f) {
+			v2 vel = v2_add(
+				ent->vel,
+				v2_mul_scalar(acc, (f32) dt)
+			);
+
+			// Calculating end position
+			end_pos.x += vel.x * dt;
+
+			// Apply friction
+			acc = v2_mul_scalar(acc, AIR_FRICTION);
+			acc.x *= GROUND_FRICTION;
+		}
+
+		// Save the dash informations
+		ent->dash_start_pos = start_pos;
+		ent->dash_end_pos = end_pos;
+		ent->frame_during_dash = ent->curr_frame;
+		ent->face_during_dash = ent->face;
+
+		// Set the dash cooldown
 		ent->dash_cooldown = DASH_COOLDOWN;
+
+		// Setting up the alpha for dashing
+		ent->dash_ghost_alpha = DASH_GHOST_ALPHA;
 	}
-	ent->dash = false;
+
+	ent->try_dash = false;
 	ent->dash_cooldown -= DASH_COOLDOWN_RATE;
-	if (ent->dash_cooldown <= 0.0f)
+	if (ent->dash_cooldown <= 0.0f) {
 		ent->dash_cooldown = 0.0f;
-
-	// Movement handling
-	physics_movement(ent, dt);
-
-to_physics:
-	// Physics updating
-	physics_compute(ent, dt);
-	physics_resolve(ent, rects, rects_cnt, dt);
-
-#ifdef RENDER_HITRANGE
-	imr_push_quad(
-		ctx.inner,
-		(v3) { hitbox.x, hitbox.y, ent->pos.z },
-		(v2) { hitbox.w, hitbox.h },
-		rotate_y(0),
-		(v4) { 1, 1, 0, 0.5 }
-	);
-#endif
+	}
 }
 
 void char_render(Entity* ent, IMR* imr, v4 tint) {
 	// If the character is in attack animation
 	// then skip the jump and walking animations
-	if (!ent->can_atk)
+	if (!ent->is_swing_complete)
 		goto skip_movement_state;
 
 	// Setting up walking animation
@@ -809,17 +878,16 @@ skip_movement_state:
 
 		// Stoping further attack by setting the cooldown
 		ent->attack = false;
-		ent->can_atk = false;
-		ent->atk_cooldown = ATK_COOLDOWN;
+		ent->is_swing_complete = false;
+		ent->swing_cooldown = SWING_COOLDOWN;
 	}
 
-	// If we can attack again ie animation is complete
-	// then we start the cooldown
+	// If the swing is complete then we start the swing cooldown for next swing
 	// TODO: Multiply rate with (dt) maybe?
-	if (ent->can_atk && ent->atk_cooldown > 0.0f) {
-		ent->atk_cooldown -= ATK_COOLDOWN_RATE;
-		if (ent->atk_cooldown < 0.0f) {
-			ent->atk_cooldown = 0.0f;
+	if (ent->is_swing_complete && ent->swing_cooldown > 0.0f) {
+		ent->swing_cooldown -= SWING_COOLDOWN_RATE;
+		if (ent->swing_cooldown < 0.0f) {
+			ent->swing_cooldown = 0.0f;
 		}
 	}
 
@@ -832,18 +900,18 @@ skip_movement_state:
 	// Switch the animation state
 	animator_switch_frame(&ent->animator, ent->anim_state);
 
-	// If we are in attack state ie (can_atk = false) and entity is alive
-	if (!ent->can_atk && !ent->dead) {
+	// If we are in attack state ie (is_swing_complete = false) and entity is alive
+	if (!ent->is_swing_complete && !ent->dead) {
 		AnimationEntry* entry = animator_get_entry(&ent->animator, ent->anim_state);
 
-		// Set (can_atk = true) when the animation for the swing is complete
+		// Set (is_swing_complete = true) when the animation for the swing is complete
 		if (entry->curr_frame >= entry->frames.count - 1) {
-			ent->can_atk = true;
+			ent->is_swing_complete = true;
 		}
 	}
 
 	// Get the texture coords of current frame
-	Rect frame = animator_get_frame(&ent->animator);
+	ent->curr_frame = animator_get_frame(&ent->animator);
 
 	// Handling player rotation
 	m4 rot = rotate_y(0);
@@ -861,12 +929,63 @@ skip_movement_state:
 		tint = HIT_TINT;
 	}
 
-	// Rendering
+	// Rendering dash effect
+	f32 step;
+	v2 size;
+	m4 dash_rot = rotate_y(0);
+
+	// Calculating the size and step of the dash
+	if (ent->face_during_dash == RIGHT) {
+		size = (v2) {
+			ent->dash_end_pos.x - ent->dash_start_pos.x,
+			ent->size.y
+		};
+
+		step = ent->rect.w + 5;
+		dash_rot = rotate_y(0);
+	} else {
+		size = (v2) {
+			ent->dash_start_pos.x - ent->dash_end_pos.x,
+			ent->size.y
+		};
+
+		step = - (ent->rect.w + 5);
+		dash_rot = rotate_y(PI);
+	}
+	
+	// Rendering the ghost sprite
+	for (
+		f32 x = ent->dash_start_pos.x;
+		(step > 0) ? (x < ent->dash_end_pos.x) : (x > ent->dash_end_pos.x);
+		x += step
+	) {
+		v3 pos = {
+			x,
+			ent->dash_start_pos.y,
+			0
+		};
+
+		imr_push_quad_tex(
+			imr,
+			pos,
+			ent->size,
+			ent->frame_during_dash,
+			ent->texture.id,
+			dash_rot,
+			(v4) { tint.r, tint.g, tint.b, ent->dash_ghost_alpha }
+		);
+
+		// Decreasing the alpha for every render
+		// This is done inside of the forloop to have variadic alpha for each dash ghost
+		ent->dash_ghost_alpha -= DASH_GHOST_ALPHA_RATE;
+	}
+
+	// Rendering character sprite
 	imr_push_quad_tex(
 		imr,
 		ent->pos,
 		ent->size,
-		frame,
+		ent->curr_frame,
 		ent->texture.id,
 		rot,
 		tint
@@ -895,8 +1014,8 @@ Entity* player_new(SpriteManager* sm) {
 	ent->texture = sm->sprites[E_SAMURAI];
 	ent->animator = sm->animators[E_SAMURAI];
 	ent->face = RIGHT;
-	ent->can_atk = true;
 	ent->health = 100.0f;
+	ent->dash_ghost_alpha = DASH_GHOST_ALPHA;
 
 	return ent;
 }
@@ -914,7 +1033,7 @@ void player_controller(Entity* ent, Event event) {
 				ent->move[RIGHT] = true;
 				break;
 			case GLFW_KEY_SPACE:
-				ent->dash = true;
+				ent->try_dash = true;
 				break;
 		}
 	}
@@ -944,8 +1063,19 @@ void player_controller(Entity* ent, Event event) {
 }
 
 void player_update(Entity* ent, Entity* enemy, Rect* rects, i32 rects_cnt, f64 dt) {
-	// Update the character stuff first
-	char_update(ent, enemy, rects, rects_cnt, dt);
+	if (ent->dead) goto skip_movement;
+
+	char_handle_atk(ent, enemy);
+	char_handle_hit(ent);
+	char_handle_dash(ent, dt);
+
+	// Movement handling
+	physics_movement(ent, dt);
+
+skip_movement:
+	// Physics updating
+	physics_compute(ent, dt);
+	physics_resolve(ent, rects, rects_cnt, dt);
 }
 
 // :enemy impl
@@ -959,35 +1089,96 @@ Entity* enemy_new(SpriteManager* sm) {
 	ent->animator = sm->animators[E_SAMURAI];
 	ent->face = LEFT;
 	ent->health = 100.0f;
+	ent->dash_ghost_alpha = DASH_GHOST_ALPHA;
 
 	return ent;
 }
 
 void enemy_update(Entity* ent, Entity* player, Rect* rects, i32 rects_cnt, f64 dt) {
-	// Update the character stuff first
-	char_update(ent, player, rects, rects_cnt, dt);
-
 	// If dead dont update
-	if (ent->dead) return;
+	if (ent->dead) goto skip_movement;
 
-	// When it cannot attack anymore. it RUNS
-	if (ent->consec_atk > MAX_CONSEC_ATK) {
-		if (fabsf(player->pos.x - ent->pos.x) < 500) {
+	// If the enemy is doing consecutive attack
+	// Do not chase the player
+	if (ent->do_consec_atk) {
+
+		// Stopping every movement when doing consecutive attack
+		ent->try_atk = true;
+		ent->move[UP] = ent->move[LEFT] = ent->move[RIGHT] = false;
+		if (ent->consec_atk >= MAX_CONSEC_ATK) {
+			ent->do_consec_atk = false;
+
+			// Enemy just completed its consecutive attack
+			// So giving it some attack cooldown
+			ent->atk_cooldown = ENEMY_ATK_COOLDOWN;
+		}
+
+		// Skip the running and chasing part
+		goto skip_chasing;
+	} else {
+
+		// Do not attack if the consec attack is not enabled
+		ent->try_atk = false;
+	}
+
+	// Only facing when we arent doing consecutive attacks
+	// Make enemy face the player
+	if (player->pos.x < ent->pos.x) {
+		ent->face = LEFT;
+	}
+	else if (player->pos.x > ent->pos.x) {
+		ent->face = RIGHT;
+	}
+
+	// During cooldown enemy cannot attack
+	// So logic that handles enemy doing whatever the fk it does when it cannot attack
+	// GOES HERE
+	if (ent->atk_cooldown > 0.0f) {
+		f32 player_enemy_dist = fabsf(player->pos.x - ent->pos.x);
+
+		// If player is way closer to the enemy then dash away
+		if (player_enemy_dist < IN_PLAYER_HITZONE) {
+			i32 chance = rand_range(0, 100);
+
+			// Only dash for certain probability
+			if (chance < ENEMY_DASH_PROBABILITY) {
+				// This helps the enemy to dash where there is more space
+				if ((ent->pos.x - 0) > (WIN_WIDTH - ent->pos.x)) {
+					// Dash to left
+					ent->face = LEFT;
+					ent->try_dash = true;
+				} else {
+					// Dash to right
+					ent->face = RIGHT;
+					ent->try_dash = true;
+				}
+			}
+		}
+
+		// If player is too close then just run the opposite direction
+		if (player_enemy_dist < PLAYER_TOO_CLOSE) {
 			if (player->pos.x < ent->pos.x) {
+				ent->move[LEFT] = false;
 				ent->move[RIGHT] = true;
 			} else {
 				ent->move[LEFT] = true;
+				ent->move[RIGHT] = false;
 			}
 		} else {
+			// If the player isnt in the range just stop mate
 			ent->move[LEFT] = ent->move[RIGHT] = false;
-			if (player->pos.x < ent->pos.x) {
-				ent->face = LEFT;
-			} else {
-				ent->face = RIGHT;
-			}
 		}
-		return;
+
+		// Droping the cooldown so that enemy can attack again
+		ent->atk_cooldown -= ENEMY_ATK_COOLDOWN_RATE;
+		if (ent->atk_cooldown <= 0.0f)
+			ent->atk_cooldown = 0.0f;
+
+		// Do not chase when you cannot hit
+		goto skip_chasing;
 	}
+
+	// Enemy Chasing
 
 	// When player is on the left side
 	if (player->pos.x < ent->pos.x) {
@@ -1022,14 +1213,27 @@ void enemy_update(Entity* ent, Entity* player, Rect* rects, i32 rects_cnt, f64 d
 		}
 	}
 
+skip_chasing:
+
 	// If player is alive and inside of hitbox ATTACK
 	Rect hitbox = char_get_hitbox(ent);
 	Rect p_rect = entity_get_rect(player);
 	if (rect_intersect_inclusive(hitbox, p_rect) && !player->dead) {
-		ent->try_atk = true;
-	} else {
-		ent->try_atk = false;
+		if (!ent->do_consec_atk && ent->consec_atk == 0 && ent->atk_cooldown == 0.0f) {
+			ent->do_consec_atk = true;
+		}
 	}
+
+	char_handle_atk(ent, player);
+	char_handle_hit(ent);
+	char_handle_dash(ent, dt);
+
+	// Movement handling
+	physics_movement(ent, dt);
+
+skip_movement:
+	physics_compute(ent, dt);
+	physics_resolve(ent, rects, rects_cnt, dt);
 }
 
 // :ui impl
@@ -1046,6 +1250,8 @@ void render_progress_bar(IMR* imr, v3 pos, v2 size, f32 val, f32 max, v4 color) 
 
 // :main
 int main() {
+	rand_init(time(NULL));
+
 	Window window = window_new("Combat", WIN_WIDTH, WIN_HEIGHT);
 	IMR imr = imr_new();
 	FrameController fc = frame_controller_new(FPS);
@@ -1107,8 +1313,7 @@ int main() {
 		// :update
 		{
 			player_update(player, enemy, rects, rects_cnt, fc.dt);
-			char_update(enemy, player, rects, rects_cnt, fc.dt);
-			// enemy_update(enemy, player, rects, rects_cnt, fc.dt);
+			enemy_update(enemy, player, rects, rects_cnt, fc.dt);
 		}
 
 		// :render
