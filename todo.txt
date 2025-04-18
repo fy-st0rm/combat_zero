@@ -18,6 +18,16 @@ UI
 	(Polish)
 	- Prettier design
 	- A proper layout to differentiate player and enemy health
+	- Easing curves
 
 
 Enemy AI
+	+ When doing consecutive attack donot adjust for players position.
+	+ After doing cosecutive attack give it a attack cooldown in which it runs from player
+	+ Give some dash
+
+	(Polish)
+		- If collided with wall while running change the direction
+		- Add some delay on enemy's thinking
+		- Reduce the accuracy for hitting
+		- Enemy dash attack
