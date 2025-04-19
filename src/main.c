@@ -64,6 +64,10 @@ const v4 HIT_OVERLAY = { 1, 1, 1, 0.8 };
 #define DASH_GHOST_ALPHA 0.7f
 #define DASH_GHOST_ALPHA_RATE 0.005f;
 
+// UI stuff
+#define PAUSE_BUTTON_WIDTH 50
+#define PAUSE_BUTTON_HEIGHT 200
+
 // :utils
 #define DA_START_CAP 50
 #define da_append(da, value) do {                                                   \
@@ -1353,6 +1357,33 @@ int main() {
 			render_progress_bar(&imr, (v3) { 10, 60, 0 }, (v2) { 200, 10 }, MAX_CONSEC_ATK - player->consec_atk, MAX_CONSEC_ATK, PLAYER_TINT);
 
 			render_progress_bar(&imr, (v3) { WIN_WIDTH - 210, 10, 0 }, (v2) { 200, 20 }, enemy->health, 100.0f, ENEMY_TINT);
+		}
+
+		// :pause
+		if (pause) {
+			imr_push_quad(
+				&imr,
+				(v3) {0},
+				(v2) { WIN_WIDTH, WIN_HEIGHT },
+				rotate_x(0),
+				(v4) { 0, 0, 0, 0.7 }
+			);
+
+			imr_push_quad(
+				&imr,
+				(v3) { WIN_WIDTH / 2 - PAUSE_BUTTON_WIDTH / 2 - 50, WIN_HEIGHT / 2 - PAUSE_BUTTON_HEIGHT / 2, 0 },
+				(v2) { PAUSE_BUTTON_WIDTH, PAUSE_BUTTON_HEIGHT },
+				rotate_x(0),
+				(v4) { 1, 1, 1, 1 }
+			);
+
+			imr_push_quad(
+				&imr,
+				(v3) { WIN_WIDTH / 2 - PAUSE_BUTTON_WIDTH / 2 + 50, WIN_HEIGHT / 2 - PAUSE_BUTTON_HEIGHT / 2, 0 },
+				(v2) { PAUSE_BUTTON_WIDTH, PAUSE_BUTTON_HEIGHT },
+				rotate_x(0),
+				(v4) { 1, 1, 1, 1 }
+			);
 		}
 		
 		imr_end(&imr);
