@@ -27,4 +27,4 @@ This is a demo project to showcase 2D combat system using opengl in C
 |Esc     | Pause       |
 
 ## Demo
-[▶️ Watch Demo Video](https://github.com/your-username/combat/blob/main/demo.mp4)
+[▶️ Watch Demo Video](https://raw.githubusercontent.com/fy-st0rm/combat/master/demo.mp4)
