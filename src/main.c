@@ -23,9 +23,9 @@ const Rect CHAR_RECT = {
 };
 
 // Colors
-const v4 PLAYER_TINT = { 1, 1, 1, 1 };
-const v4 ENEMY_TINT  = { 0.2, 0.5, 1, 1 };
-const v4 DEAD_TINT = { 1, 0, 0, 1 };
+const v4 PLAYER_TINT = { 0, 0.5, 1, 1 };
+const v4 ENEMY_TINT  = { 1, 0, 0.1, 1 };
+const v4 DEAD_TINT   = { 1, 0, 0, 1 };
 const v4 HIT_OVERLAY = { 1, 1, 1, 0.8 };
 
 // Combat constants
@@ -1275,6 +1275,8 @@ int main() {
 	);
 	SpriteManager sm = load_sprites();
 
+	b32 pause = false;
+
 	// Set renderer to context for debug rendering
 	ctx->inner = &imr;
 
@@ -1308,6 +1310,11 @@ int main() {
 					enemy->try_atk = false;
 				}
 			}
+			else if (event.type == KEYDOWN) {
+				if (event.e.key == GLFW_KEY_ESCAPE) {
+					pause = !pause;
+				}
+			}
 		}
 
 		m4 mvp = ocamera_calc_mvp(&camera);
@@ -1317,7 +1324,7 @@ int main() {
 		imr_begin(&imr);
 
 		// :update
-		{
+		if (!pause) {
 			player_update(player, enemy, rects, rects_cnt, fc.dt);
 			enemy_update(enemy, player, rects, rects_cnt, fc.dt);
 		}
