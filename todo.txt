@@ -35,5 +35,5 @@ Enemy AI
 		- Enemy dash attack
 
 Polish
-	- Better hit animation
+	+ Better hit animation
 

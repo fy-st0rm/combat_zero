@@ -439,6 +439,7 @@ typedef struct {
 	v4 color;
 	v2 tex_coord;
 	f32 tex_id;
+	v4 overlay_color;
 } Vertex;
 
 typedef struct {
@@ -446,7 +447,7 @@ typedef struct {
 } Triangle;
 
 #define TEXTURE_SAMPLE_AMT 32
-#define VERTEX_SIZE   10
+#define VERTEX_SIZE   14
 #define MAX_VERT_CNT  10000
 #define MAX_BUFF_CAP  MAX_VERT_CNT  * VERTEX_SIZE
 #define MAX_VBO_SIZE  MAX_BUFF_CAP  * sizeof(f32)
@@ -473,7 +474,9 @@ void imr_switch_shader_to_default(IMR* imr);
 void imr_update_mvp(IMR* imr, m4 mvp);
 void imr_push_vertex(IMR* imr, Vertex v);
 void imr_push_quad(IMR* imr, v3 pos, v2 size, m4 rot, v4 color);
+void imr_push_quad_overlay(IMR* imr, v3 pos, v2 size, m4 rot, v4 color, v4 overlay_color);
 void imr_push_quad_tex(IMR* imr, v3 pos, v2 size, Rect tex_rect, f32 tex_id, m4 rot, v4 color);
+void imr_push_quad_tex_overlay(IMR* imr, v3 pos, v2 size, Rect tex_rect, f32 tex_id, m4 rot, v4 color, v4 overlay_color);
 void imr_push_triangle(IMR* imr, v3 p1, v3 p2, v3 p3, m4 rot, v4 color);
 void imr_push_triangle_tex(IMR* imr, v3 p1, v3 p2, v3 p3, Triangle tex_coord, f32 tex_id, m4 rot, v4 color);
 
@@ -1611,14 +1614,17 @@ const char* __internal_v_src =
 	"layout (location = 1) in vec4 color;\n"
 	"layout (location = 2) in vec2 tex_coord;\n"
 	"layout (location = 3) in float tex_id;\n"
+	"layout (location = 4) in vec4 overlay_color;\n"
 	"uniform mat4 mvp;\n"
 	"out vec4 o_color;\n"
 	"out vec2 o_tex_coord;\n"
 	"out float o_tex_id;\n"
+	"out vec4 o_overlay_color;\n"
 	"void main() {\n"
 	"o_color = color;\n"
 	"o_tex_coord = tex_coord;\n"
 	"o_tex_id = tex_id;\n"
+	"o_overlay_color = overlay_color;\n"
 	"gl_Position = mvp * vec4(position, 1.0f);\n"
 	"}\n";
 
@@ -1629,9 +1635,11 @@ const char* __internal_f_src =
 	"in vec4 o_color;\n"
 	"in vec2 o_tex_coord;\n"
 	"in float o_tex_id;\n"
+	"in vec4 o_overlay_color;\n"
 	"void main() {\n"
 	"int index = int(o_tex_id);\n"
-	"color = texture(textures[index], o_tex_coord) * o_color;\n"
+	"vec4 t_color = texture(textures[index], o_tex_coord) * o_color;\n"
+	"color = mix(t_color, vec4(o_overlay_color.rgb, t_color.a), o_overlay_color.a);\n"
 	"}\n";
 
 IMR imr_new() {
@@ -1650,7 +1658,7 @@ IMR imr_new() {
 
 	// VAO format
 	STATIC_ASSERT(
-		10 == sizeof(Vertex) / sizeof(f32),
+		14 == sizeof(Vertex) / sizeof(f32),
 		"Vertex has been updated. Update VAO format."
 	);
 
@@ -1662,6 +1670,8 @@ IMR imr_new() {
 	GLCall(glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (const void*) offsetof(Vertex, tex_coord)));
 	GLCall(glEnableVertexAttribArray(3));
 	GLCall(glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(Vertex), (const void*) offsetof(Vertex, tex_id)));
+	GLCall(glEnableVertexAttribArray(4));
+	GLCall(glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, sizeof(Vertex), (const void*) offsetof(Vertex, overlay_color)));
 
 	// Generating white texture
 	u32 data = 0xffffffff;
@@ -1750,7 +1760,7 @@ void imr_update_mvp(IMR* imr, m4 mvp) {
 
 void imr_push_vertex(IMR* imr, Vertex v) {
 	STATIC_ASSERT(
-		10 == sizeof(Vertex) / sizeof(f32),
+		14 == sizeof(Vertex) / sizeof(f32),
 		"Vertex has been updated. Update this method."
 	);
 
@@ -1764,6 +1774,10 @@ void imr_push_vertex(IMR* imr, Vertex v) {
 	imr->buffer[imr->buff_idx++] = v.tex_coord.x;
 	imr->buffer[imr->buff_idx++] = v.tex_coord.y;
 	imr->buffer[imr->buff_idx++] = v.tex_id;
+	imr->buffer[imr->buff_idx++] = v.overlay_color.r;
+	imr->buffer[imr->buff_idx++] = v.overlay_color.g;
+	imr->buffer[imr->buff_idx++] = v.overlay_color.b;
+	imr->buffer[imr->buff_idx++] = v.overlay_color.a;
 }
 
 void imr_push_quad(IMR* imr, v3 pos, v2 size, m4 rot, v4 color) {
@@ -1773,7 +1787,18 @@ void imr_push_quad(IMR* imr, v3 pos, v2 size, m4 rot, v4 color) {
 	imr_push_quad_tex(imr, pos, size, tex_rect, imr->white.id, rot, color);
 }
 
+void imr_push_quad_overlay(IMR* imr, v3 pos, v2 size, m4 rot, v4 color, v4 overlay_color) {
+	Rect tex_rect = {
+		0, 0, 1, 1
+	};
+	imr_push_quad_tex_overlay(imr, pos, size, tex_rect, imr->white.id, rot, color, overlay_color);
+}
+
 void imr_push_quad_tex(IMR* imr, v3 pos, v2 size, Rect tex_rect, f32 tex_id, m4 rot, v4 color) {
+	imr_push_quad_tex_overlay(imr, pos, size, tex_rect, tex_id, rot, color, (v4) {0});
+}
+
+void imr_push_quad_tex_overlay(IMR* imr, v3 pos, v2 size, Rect tex_rect, f32 tex_id, m4 rot, v4 color, v4 overlay_color) {
 	if (((imr->buff_idx + 6 * VERTEX_SIZE) / VERTEX_SIZE) >= MAX_VERT_CNT) {
 		imr_end(imr);
 		imr_begin(imr);
@@ -1809,6 +1834,7 @@ void imr_push_quad_tex(IMR* imr, v3 pos, v2 size, Rect tex_rect, f32 tex_id, m4 
 
 	p1.color = p2.color = p3.color = p4.color = p5.color = p6.color = color;
 	p1.tex_id = p2.tex_id = p3.tex_id = p4.tex_id = p5.tex_id = p6.tex_id = tex_id;
+	p1.overlay_color = p2.overlay_color = p3.overlay_color = p4.overlay_color = p5.overlay_color = p6.overlay_color = overlay_color;
 
 	imr_push_vertex(imr, p1);
 	imr_push_vertex(imr, p2);

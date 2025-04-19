@@ -25,7 +25,8 @@ const Rect CHAR_RECT = {
 // Colors
 const v4 PLAYER_TINT = { 1, 1, 1, 1 };
 const v4 ENEMY_TINT  = { 0.2, 0.5, 1, 1 };
-const v4 HIT_TINT    = { 1, 0, 0, 1 };
+const v4 DEAD_TINT = { 1, 0, 0, 1 };
+const v4 HIT_OVERLAY = { 1, 1, 1, 0.8 };
 
 // Combat constants
 #define HIT_RANGE 80.0f
@@ -895,6 +896,7 @@ skip_movement_state:
 	if (ent->health <= 0.0f) {
 		ent->anim_state = DEATH;
 		ent->dead = true;
+		tint = DEAD_TINT;
 	}
 
 	// Switch the animation state
@@ -924,9 +926,10 @@ skip_movement_state:
 			break;
 	}
 
-	// If hit apply the hit tint instead
+	// If hit apply the hit overlay
+	v4 overlay = { 0 };
 	if (ent->hit) {
-		tint = HIT_TINT;
+		overlay = HIT_OVERLAY;
 	}
 
 	// Rendering dash effect
@@ -981,14 +984,15 @@ skip_movement_state:
 	}
 
 	// Rendering character sprite
-	imr_push_quad_tex(
+	imr_push_quad_tex_overlay(
 		imr,
 		ent->pos,
 		ent->size,
 		ent->curr_frame,
 		ent->texture.id,
 		rot,
-		tint
+		tint,
+		overlay
 	);
 
 	// Debug collider render
@@ -1066,13 +1070,14 @@ void player_update(Entity* ent, Entity* enemy, Rect* rects, i32 rects_cnt, f64 d
 	if (ent->dead) goto skip_movement;
 
 	char_handle_atk(ent, enemy);
-	char_handle_hit(ent);
 	char_handle_dash(ent, dt);
 
 	// Movement handling
 	physics_movement(ent, dt);
 
 skip_movement:
+	char_handle_hit(ent);
+
 	// Physics updating
 	physics_compute(ent, dt);
 	physics_resolve(ent, rects, rects_cnt, dt);
@@ -1225,13 +1230,14 @@ skip_chasing:
 	}
 
 	char_handle_atk(ent, player);
-	char_handle_hit(ent);
 	char_handle_dash(ent, dt);
 
 	// Movement handling
 	physics_movement(ent, dt);
 
 skip_movement:
+	char_handle_hit(ent);
+
 	physics_compute(ent, dt);
 	physics_resolve(ent, rects, rects_cnt, dt);
 }
