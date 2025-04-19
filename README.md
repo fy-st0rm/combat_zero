@@ -29,4 +29,4 @@ This is a demo project to showcase 2D combat system using opengl in C
 
 ## Demo
 
-<video src='demo.mp4'/>
+[Demo](https://github.com/fy-st0rm/combat_zero/blob/master/demo.mp4)
