@@ -1,4 +1,5 @@
 # Combat_Zero
+![Screenshot](screenshot.png)
 
 This is a demo project to showcase 2D combat system using opengl in C
 
@@ -27,4 +28,5 @@ This is a demo project to showcase 2D combat system using opengl in C
 |Esc     | Pause       |
 
 ## Demo
-[▶️ Watch Demo Video](https://raw.githubusercontent.com/fy-st0rm/combat/master/demo.mp4)
+
+<video src='demo.mp4'/>
