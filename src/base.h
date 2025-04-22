@@ -1108,6 +1108,11 @@ Window window_new(const char* title, u32 width, u32 height) {
 	panic(glfwInit(), "Failed to initialize glfw\n");
 
 	glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+	glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
+	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+	//
 	GLFWwindow* glfw_window = glfwCreateWindow(
 		width, height,
 		title, NULL, NULL
@@ -1502,11 +1507,13 @@ void texture_clear(Texture texture) {
 }
 
 void texture_bind(Texture texture) {
-	GLCall(glBindTextureUnit(texture.id, texture.id));
+	GLCall(glActiveTexture(GL_TEXTURE0 + (i32) texture.id));
+	GLCall(glBindTexture(GL_TEXTURE_2D, texture.id));
 }
 
 void texture_unbind(Texture texture) {
-	GLCall(glBindTextureUnit(texture.id, 0));
+	GLCall(glActiveTexture(GL_TEXTURE0 + (i32) texture.id));
+	GLCall(glBindTexture(GL_TEXTURE_2D, 0));
 }
 
 void texture_delete(Texture texture) {
@@ -1609,7 +1616,7 @@ void fbo_unbind() {
 
 // :imr impl
 const char* __internal_v_src =
-	"#version 440 core\n"
+	"#version 330 core\n"
 	"layout (location = 0) in vec3 position;\n"
 	"layout (location = 1) in vec4 color;\n"
 	"layout (location = 2) in vec2 tex_coord;\n"
@@ -1629,7 +1636,7 @@ const char* __internal_v_src =
 	"}\n";
 
 const char* __internal_f_src =
-	"#version 440 core\n"
+	"#version 330 core\n"
 	"layout (location = 0) out vec4 color;\n"
 	"uniform sampler2D textures[32];\n"
 	"in vec4 o_color;\n"
@@ -1638,7 +1645,41 @@ const char* __internal_f_src =
 	"in vec4 o_overlay_color;\n"
 	"void main() {\n"
 	"int index = int(o_tex_id);\n"
-	"vec4 t_color = texture(textures[index], o_tex_coord) * o_color;\n"
+	"vec4 t_color;\n"
+	"switch (index) {\n"
+	"case 0: t_color = texture(textures[0], o_tex_coord) * o_color; break;\n"
+	"case 1: t_color = texture(textures[1], o_tex_coord) * o_color; break;\n"
+	"case 2: t_color = texture(textures[2], o_tex_coord) * o_color; break;\n"
+	"case 3: t_color = texture(textures[3], o_tex_coord) * o_color; break;\n"
+	"case 4: t_color = texture(textures[4], o_tex_coord) * o_color; break;\n"
+	"case 5: t_color = texture(textures[5], o_tex_coord) * o_color; break;\n"
+	"case 6: t_color = texture(textures[6], o_tex_coord) * o_color; break;\n"
+	"case 7: t_color = texture(textures[7], o_tex_coord) * o_color; break;\n"
+	"case 8: t_color = texture(textures[8], o_tex_coord) * o_color; break;\n"
+	"case 9: t_color = texture(textures[9], o_tex_coord) * o_color; break;\n"
+	"case 10: t_color = texture(textures[10], o_tex_coord) * o_color; break;\n"
+	"case 11: t_color = texture(textures[11], o_tex_coord) * o_color; break;\n"
+	"case 12: t_color = texture(textures[12], o_tex_coord) * o_color; break;\n"
+	"case 13: t_color = texture(textures[13], o_tex_coord) * o_color; break;\n"
+	"case 14: t_color = texture(textures[14], o_tex_coord) * o_color; break;\n"
+	"case 15: t_color = texture(textures[15], o_tex_coord) * o_color; break;\n"
+	"case 16: t_color = texture(textures[16], o_tex_coord) * o_color; break;\n"
+	"case 17: t_color = texture(textures[17], o_tex_coord) * o_color; break;\n"
+	"case 18: t_color = texture(textures[18], o_tex_coord) * o_color; break;\n"
+	"case 19: t_color = texture(textures[19], o_tex_coord) * o_color; break;\n"
+	"case 20: t_color = texture(textures[20], o_tex_coord) * o_color; break;\n"
+	"case 21: t_color = texture(textures[21], o_tex_coord) * o_color; break;\n"
+	"case 22: t_color = texture(textures[22], o_tex_coord) * o_color; break;\n"
+	"case 23: t_color = texture(textures[23], o_tex_coord) * o_color; break;\n"
+	"case 24: t_color = texture(textures[24], o_tex_coord) * o_color; break;\n"
+	"case 25: t_color = texture(textures[25], o_tex_coord) * o_color; break;\n"
+	"case 26: t_color = texture(textures[26], o_tex_coord) * o_color; break;\n"
+	"case 27: t_color = texture(textures[27], o_tex_coord) * o_color; break;\n"
+	"case 28: t_color = texture(textures[28], o_tex_coord) * o_color; break;\n"
+	"case 29: t_color = texture(textures[29], o_tex_coord) * o_color; break;\n"
+	"case 30: t_color = texture(textures[30], o_tex_coord) * o_color; break;\n"
+	"case 31: t_color = texture(textures[31], o_tex_coord) * o_color; break;\n"
+	"}\n"
 	"color = mix(t_color, vec4(o_overlay_color.rgb, t_color.a), o_overlay_color.a);\n"
 	"}\n";
 

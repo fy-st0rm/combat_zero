@@ -1263,6 +1263,9 @@ int main() {
 	rand_init(time(NULL));
 
 	Window window = window_new("Combat", WIN_WIDTH, WIN_HEIGHT);
+
+	printf("Opengl Version: %s\n", glGetString(GL_VERSION));
+
 	IMR imr = imr_new();
 	FrameController fc = frame_controller_new(FPS);
 	OCamera camera = ocamera_new(
